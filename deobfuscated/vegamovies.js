@@ -49,7 +49,7 @@ var __async = (_0x316a2a, _0x265c19, _0x1b3776) => {
 var cheerio = require("cheerio-without-node-native");
 var PROVIDER_NAME = "VegaMovies";
 var BASE_URL = "https://vegamovies.mq";
-var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
+var TMDB_API_KEY = process.env.TMDB_API_KEY || "439c478a771f35c05022f9feabcca01c";
 var DOMAINS_JSON_URL = "https://raw.githubusercontent.com/SaurabhKaperwan/Utils/refs/heads/main/urls.json";
 var REQUEST_TIMEOUT = 12000;
 var HEADERS = {

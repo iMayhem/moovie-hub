@@ -19,7 +19,7 @@ var __async = (_0x3f2689, _0xa549f7, _0x5a548b) => {
   });
 };
 var PROVIDER_NAME = "AnikotoTV";
-var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
+var TMDB_API_KEY = process.env.TMDB_API_KEY || "439c478a771f35c05022f9feabcca01c";
 var TVDB_API_KEY = "777140fb-de92-440a-aec2-95eb51e2d7ab";
 var MOBILE_UAS = ["Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36", "Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36", "Mozilla/5.0 (Linux; Android 12; Pixel 6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Mobile Safari/537.36", "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"];
 function getHeaders(_0x39de1b) {

@@ -49,7 +49,7 @@ var HEADERS = {
   Referer: "https://lordflix.org/",
   "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36"
 };
-var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
+var TMDB_API_KEY = process.env.TMDB_API_KEY || "439c478a771f35c05022f9feabcca01c";
 var TMDB_BASE_URL = "https://api.themoviedb.org/3";
 var LORDFLIX_API = "https://snowhouse.lordflix.club";
 var MULTI_DECRYPT_API = "https://enc-dec.app/api";

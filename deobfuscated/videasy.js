@@ -2,7 +2,7 @@
 
 // VidEasy / VidKing Wings provider. The Wings response is XOR-decrypted with
 // the same stream cipher used by the client, then normalized to hub streams.
-const TMDB_API_KEY = '439c478a771f35c05022f9feabcca01c';
+const TMDB_API_KEY = process.env.TMDB_API_KEY || '439c478a771f35c05022f9feabcca01c';
 const TMDB_BASE = 'https://api.themoviedb.org/3';
 const WINGS_BASE = 'https://api.speedracelight.com';
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36';

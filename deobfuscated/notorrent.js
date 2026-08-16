@@ -19,7 +19,7 @@ var __async = (_0x179375, _0xbab1a8, _0xadbf64) => {
   });
 };
 var NOTORRENT_API = "https://addon-osvh.onrender.com";
-var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
+var TMDB_API_KEY = process.env.TMDB_API_KEY || "439c478a771f35c05022f9feabcca01c";
 function getImdbId(_0x22b479, _0x51aab7) {
   return __async(this, null, function* () {
     var _0xfd03ad;

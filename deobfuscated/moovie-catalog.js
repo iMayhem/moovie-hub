@@ -6,8 +6,9 @@ const SEARCH_API = 'https://api2.imdb4.shop/api/search2';
 const CATALOG_REFERER = 'https://netmirror.global/';
 const CATALOG_ORIGIN = 'https://netmirror.global';
 
-const TMDB_API_KEY = '439c478a771f35c05022f9feabcca01c';
+const TMDB_API_KEY = process.env.TMDB_API_KEY || '439c478a771f35c05022f9feabcca01c';
 const TMDB_BASE_URL = 'https://api.themoviedb.org/3';
+const PROXY_BASE = (process.env.PROXY_BASE || '').replace(/\/+$/, '');
 
 const PLAYER_HOSTS = {
   1: 'speed.watch22.shop',
@@ -445,7 +446,7 @@ async function getStreams(id, type, season, episode, rawQuery) {
       
       const u = Buffer.from(s.url).toString('base64url');
       const h = Buffer.from(JSON.stringify(headers)).toString('base64url');
-      const proxiedUrl = `https://providers.peestream.in/proxy?u=${u}&h=${h}`;
+      const proxiedUrl = `${PROXY_BASE}/proxy?u=${u}&h=${h}`;
 
       return {
         name: 'MoovieCatalog',
@@ -502,7 +503,7 @@ async function resolveVariant(catalogId, type, season, episode) {
     
     const u = Buffer.from(best.url).toString('base64url');
     const h = Buffer.from(JSON.stringify(headers)).toString('base64url');
-    const proxiedUrl = `https://providers.peestream.in/proxy?u=${u}&h=${h}`;
+    const proxiedUrl = `${PROXY_BASE}/proxy?u=${u}&h=${h}`;
 
     return {
       name: 'MoovieCatalog',

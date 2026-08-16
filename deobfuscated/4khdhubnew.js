@@ -2,7 +2,7 @@ var cheerio = require("cheerio-without-node-native");
 var PROVIDER_NAME = "4khdhub";
 var DOMAINS_URL = "https://raw.githubusercontent.com/Xyr0nX/NGEX/refs/heads/main/manifest.json";
 var DEFAULT_MAIN_URL = "https://4khdhub.dad";
-var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
+var TMDB_API_KEY = process.env.TMDB_API_KEY || "439c478a771f35c05022f9feabcca01c";
 var DEBUG = false;
 var FALLBACK_DOMAINS = [DEFAULT_MAIN_URL];
 var KNOWN_URLS = {
@@ -279,7 +279,12 @@ function buildStream(_0x390e92, _0x33e1d7, _0x25d98f, _0x4428f1, _0x19e302, _0x1
   if (streamHeaders.Origin) params.set("origin", streamHeaders.Origin);
   if (streamHeaders["User-Agent"]) params.set("ua", streamHeaders["User-Agent"]);
 
-  var proxiedUrl = `https://cf-header-proxy.moovie.fun/?${params.toString()}`;
+  // Use an external proxy base if configured (e.g. CF_PROXY_BASE), otherwise
+  // fall back to this hub's own /proxy endpoint with inline URL+headers.
+  var cfBase = (process.env.CF_PROXY_BASE || "").replace(/\/+$/, "");
+  var proxiedUrl = cfBase
+    ? cfBase + "/?" + params.toString()
+    : "/proxy?u=" + Buffer.from(_0x33e1d7).toString("base64url") + "&h=" + Buffer.from(JSON.stringify(streamHeaders)).toString("base64url");
 
   return {
     name: _0x5f3922.name,

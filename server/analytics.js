@@ -149,6 +149,9 @@ function addEvent(type, sessionId, ip, userAgent, httpReferrer, extra) {
   broadcast({ type: 'stats', stats: getStats() });
 }
 
+const SELF_DOMAINS = (process.env.SELF_DOMAINS || '')
+  .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+
 function getDomainFromReferrer(ref, extra) {
   let target = '';
   if (extra && extra.domain && extra.domain !== 'Direct / Standalone') {
@@ -165,8 +168,8 @@ function getDomainFromReferrer(ref, extra) {
     const raw = target.startsWith('http') ? target : `http://${target}`;
     const parsed = new URL(raw);
     const host = parsed.hostname;
-    if (host === 'providers.peestream.in' || host === 'peestream.in' || host === 'proxy.moovie.fun') {
-      if (extra && extra.referrer && !extra.referrer.includes('peestream.in') && !extra.referrer.includes('moovie.fun')) {
+    if (SELF_DOMAINS.includes(host)) {
+      if (extra && extra.referrer && !SELF_DOMAINS.some(d => extra.referrer.includes(d))) {
         return new URL(extra.referrer.startsWith('http') ? extra.referrer : `http://${extra.referrer}`).hostname;
       }
       return 'Direct / Standalone';

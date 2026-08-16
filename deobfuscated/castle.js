@@ -45,7 +45,7 @@ var __async = (_0x56dc30, _0x4ed561, _0x267797) => {
     _0x4b0257((_0x267797 = _0x267797.apply(_0x56dc30, _0x4ed561)).next());
   });
 };
-var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
+var TMDB_API_KEY = process.env.TMDB_API_KEY || "439c478a771f35c05022f9feabcca01c";
 var TMDB_BASE_URL = "https://api.themoviedb.org/3";
 var CASTLE_BASE = "https://api.hlowb.com";
 var PKG = "com.external.castle";

@@ -20,7 +20,7 @@ var __async = (_0x1b6c68, _0x139ee3, _0x1cf243) => {
 };
 var cheerio = require("cheerio-without-node-native");
 var CryptoJS = require("crypto-js");
-var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
+var TMDB_API_KEY = process.env.TMDB_API_KEY || "439c478a771f35c05022f9feabcca01c";
 var TMDB_BASE_URL = "https://api.themoviedb.org/3";
 var DEFAULT_API_BASE = "https://id-mapping-api-showbox-proxy.hf.space/api/media";
 var WORKING_HEADERS = {

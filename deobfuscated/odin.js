@@ -22,7 +22,7 @@ var __async = (thisArg, args, generator) => {
   });
 };
 
-const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
+const TMDB_API_KEY = process.env.TMDB_API_KEY || "439c478a771f35c05022f9feabcca01c";
 const TMDB_BASE_URL = "https://api.themoviedb.org/3";
 const WINGS_API_BASE = "https://api.speedracelight.com";
 const USER_AGENT =

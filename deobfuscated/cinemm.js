@@ -20,7 +20,7 @@ var __async = (_0x412d0f, _0x25ffe6, _0x271dbc) => {
 };
 var PROVIDER_NAME = "CineMM";
 var MAIN_URL = "https://cinemm.com";
-var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
+var TMDB_API_KEY = process.env.TMDB_API_KEY || "439c478a771f35c05022f9feabcca01c";
 var ACTIONS = {
   search: "6018fac11e9b775fd3a7f877cdc4ab1b312b8e978c",
   quotaReset: "6077a1a88313137459881a82cca9e76114af8993f6",

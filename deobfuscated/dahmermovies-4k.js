@@ -19,7 +19,7 @@ var __async = (_0x3b000f, _0x6b952b, _0x285023) => {
   });
 };
 console.log("[DahmerMovies] Initializing Scraper");
-var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
+var TMDB_API_KEY = process.env.TMDB_API_KEY || "439c478a771f35c05022f9feabcca01c";
 var DAHMER_MOVIES_API = "https://a.111477.xyz";
 function makeRequest(_0x30119a) {
   return __async(this, null, function* () {

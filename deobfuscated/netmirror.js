@@ -58,7 +58,7 @@ var OTT_SERVICES = [{
   code: "hs",
   name: "Hotstar"
 }];
-var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
+var TMDB_API_KEY = process.env.TMDB_API_KEY || "439c478a771f35c05022f9feabcca01c";
 var TMDB_BASE_URL = "https://api.themoviedb.org/3";
 function getNfMirrorApi() {
   return __async(this, null, function* () {

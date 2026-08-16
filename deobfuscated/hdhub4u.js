@@ -71,7 +71,7 @@ var __async = (_0x1389ca, _0x1ef12d, _0x2af041) => {
   });
 };
 var import_cheerio_without_node_native2 = __toESM(require("cheerio-without-node-native"));
-var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
+var TMDB_API_KEY = process.env.TMDB_API_KEY || "439c478a771f35c05022f9feabcca01c";
 var TMDB_BASE_URL = "https://api.themoviedb.org/3";
 var MAIN_URL = "https://new1.hdhub4u.cl";
 var DOMAINS_URL = "https://raw.githubusercontent.com/phisher98/TVVVV/refs/heads/main/domains.json";

@@ -1,6 +1,6 @@
 // Vyla SDK provider — wraps @vyla-entertainment/sdk (ESM) via dynamic import
 const fs = require('fs');
-const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
+const TMDB_API_KEY = process.env.TMDB_API_KEY || "439c478a771f35c05022f9feabcca01c";
 const HARD_CAP_MS = 15000;
 const CONFIG_PATH = "/root/api/server/providers.json";
 

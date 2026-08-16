@@ -51,7 +51,7 @@ console.log("[MoviesMod] Using cheerio-without-node-native for DOM parsing");
 function escapeRegExp(_0x48caf8) {
   return _0x48caf8.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
-var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
+var TMDB_API_KEY = process.env.TMDB_API_KEY || "439c478a771f35c05022f9feabcca01c";
 var FALLBACK_DOMAIN = "https://moviesmod.money";
 var DOMAIN_CACHE_TTL = 14400000;
 var moviesModDomain = FALLBACK_DOMAIN;

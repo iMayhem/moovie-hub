@@ -71,7 +71,7 @@ var __async = (_0x3be590, _0x2163a4, _0x206f1d) => {
   });
 };
 var import_cheerio_without_node_native = __toESM(require("cheerio-without-node-native"));
-var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
+var TMDB_API_KEY = process.env.TMDB_API_KEY || "439c478a771f35c05022f9feabcca01c";
 var TMDB_BASE_URL = "https://api.themoviedb.org/3";
 var MAIN_URL = "https://allmovieland.you";
 var HEADERS = {

@@ -47,7 +47,7 @@ var __async = (_0x1bbc07, _0xca5acf, _0x29254a) => {
   });
 };
 var PROVIDER_NAME = "ZinkMovies";
-var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
+var TMDB_API_KEY = process.env.TMDB_API_KEY || "439c478a771f35c05022f9feabcca01c";
 var DOMAINS_JSON_URL = "https://raw.githubusercontent.com/SaurabhKaperwan/Utils/refs/heads/main/urls.json";
 var cachedDomains = null;
 var domainCacheTime = 0;

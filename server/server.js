@@ -60,10 +60,11 @@ function generateStreamId() {
 
 function toProxyUrl(url, headers, type) {
   if (typeof url !== 'string') return url;
-  // Unwrap the legacy cf-header-proxy.moovie.fun wrapper (dead). The real media
-  // URL lives in its `url` query param; if that is a dl.php "Link Generator" page,
-  // the actual video URL is in its `link` query param. No proxying is used.
-  if (url.includes('cf-header-proxy.moovie.fun')) {
+  // Unwrap legacy external proxy wrappers (set LEGACY_PROXY_DOMAIN to enable).
+  // The real media URL lives in the `url` query param; if that is a dl.php
+  // "Link Generator" page, the actual video URL is in its `link` query param.
+  const legacyDomain = process.env.LEGACY_PROXY_DOMAIN || '';
+  if (legacyDomain && url.includes(legacyDomain)) {
     try {
       const target = new URL(url).searchParams.get('url');
       if (target) {
@@ -102,7 +103,10 @@ function buildCfProxyUrl(stream) {
       headers: stream.headers || {},
       type: stream.type || 'm3u8',
     });
-    return `https://cf-header-proxy.moovie.fun/?id=${storeId}`;
+    // Use a configured external Cloudflare proxy if provided, otherwise fall
+    // back to this hub's own /proxy endpoint (relative so it works on any host).
+    const cfBase = (process.env.CF_PROXY_BASE || '').replace(/\/+$/, '');
+    return cfBase ? `${cfBase}/?id=${storeId}` : `/proxy?id=${storeId}`;
   } catch {
     return null;
   }
@@ -155,6 +159,9 @@ function loadConfig() {
   } catch {
     cfg = { port: 3000, tmdbApiKey: '', autoplay: true, introSkip: false, streamProxy: false, proxy: { enabled: false }, globalTimeout: 12000, maxResultsPerProvider: 20, providers: {}, qualityFilter: { '4k': true, '1080': true, '720': true, 'sd': true, 'unknown': true } };
   }
+  // Env overrides take precedence over config.json
+  if (process.env.PORT) cfg.port = Number(process.env.PORT);
+  if (process.env.TMDB_API_KEY) cfg.tmdbApiKey = process.env.TMDB_API_KEY;
   if (!cfg.providers) cfg.providers = {};
   // Merge user's provider overrides from gitignored file
   try {
@@ -388,7 +395,7 @@ app.use(express.json());
 
 // ============ Authentication & Locked Panel ============
 const ADMIN_USERNAME = process.env.ADMIN_USER || 'admin';
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'peestream2026';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || crypto.randomBytes(12).toString('hex');
 const authSessions = new Set();
 
 function isReqAuthenticated(req) {
@@ -416,6 +423,21 @@ app.post('/api/auth/logout', (req, res) => {
   const token = (authHeader && authHeader.startsWith('Bearer ')) ? authHeader.slice(7) : req.headers['x-admin-token'];
   if (token) authSessions.delete(token);
   res.json({ success: true });
+});
+
+// Server-side TMDB search (uses configured key so clients never expose one)
+app.get('/api/tmdb/search', async (req, res) => {
+  const query = String(req.query.q || '').trim();
+  const tmdbKey = config.tmdbApiKey || process.env.TMDB_API_KEY || '';
+  if (!query) return res.status(400).json({ error: 'Missing q parameter' });
+  if (!tmdbKey) return res.status(400).json({ error: 'No TMDB API key configured (set TMDB_API_KEY env or config.json)' });
+  try {
+    const r = await fetch(`https://api.themoviedb.org/3/search/movie?api_key=${encodeURIComponent(tmdbKey)}&query=${encodeURIComponent(query)}&language=en-US&page=1`);
+    const data = await r.json();
+    res.json(data);
+  } catch (e) {
+    res.status(502).json({ error: 'TMDB search failed', detail: e.message });
+  }
 });
 
 
@@ -910,7 +932,7 @@ app.get('/api/subtitles', async (req, res) => {
   try {
     // 1. Get IMDB ID from TMDB
     const mediaType = type === 'show' || type === 'tv' ? 'tv' : 'movie';
-    const tmdbKey = '439c478a771f35c05022f9feabcca01c';
+    const tmdbKey = config.tmdbApiKey || process.env.TMDB_API_KEY || '';
     const extUrl = `https://api.themoviedb.org/3/${mediaType}/${tmdbId}/external_ids?api_key=${tmdbKey}`;
     const extResp = await fetch(extUrl);
     const extData = await extResp.json();
@@ -2029,6 +2051,11 @@ async function start() {
   server.listen(port, '0.0.0.0', () => {
     console.log(`Server running on http://0.0.0.0:${port}`);
     console.log(`  Proxy: /proxy  |  Docs: /docs`);
+    if (!process.env.ADMIN_PASSWORD) {
+      console.log(`  Admin: ${ADMIN_USERNAME} / ${ADMIN_PASSWORD}  (set ADMIN_PASSWORD env to change)`);
+    } else {
+      console.log(`  Admin: ${ADMIN_USERNAME} / (from ADMIN_PASSWORD env)`);
+    }
     const os = require('os');
     const nets = os.networkInterfaces();
     for (const name of Object.keys(nets)) {

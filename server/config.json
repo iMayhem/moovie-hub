@@ -1,6 +1,6 @@
 {
   "port": 3000,
-  "tmdbApiKey": "dfa4c2c7c1de1005adee824dc5593672",
+  "tmdbApiKey": "",
   "proxy": {
     "enabled": false,
     "type": "http",
@@ -9,6 +9,6 @@
     "username": "",
     "password": ""
   },
-  "globalTimeout": 20000,
+  "globalTimeout": 12000,
   "maxResultsPerProvider": 20
 }

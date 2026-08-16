@@ -37,7 +37,7 @@ var __async = (_0x55c530, _0x1d87b9, _0x14b625) => {
     _0x2a6151((_0x14b625 = _0x14b625.apply(_0x55c530, _0x1d87b9)).next());
   });
 };
-var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
+var TMDB_API_KEY = process.env.TMDB_API_KEY || "439c478a771f35c05022f9feabcca01c";
 var TMDB_BASE = "https://api.themoviedb.org/3";
 var PROVIDER_ID = "VidSrc";
 function safeFetch(_0x5483ff) {

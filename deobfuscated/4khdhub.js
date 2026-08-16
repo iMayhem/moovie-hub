@@ -44,7 +44,7 @@ var __async = (_0x1782df, _0x3f766e, _0x3d0a87) => {
   });
 };
 var PROVIDER_NAME = "4kHDHub";
-var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
+var TMDB_API_KEY = process.env.TMDB_API_KEY || "439c478a771f35c05022f9feabcca01c";
 var DOMAINS_JSON_URL = "https://raw.githubusercontent.com/PirateZoro9/asura-providers/main/urls.json";
 var TIMEOUT = 12000;
 var baseUrl = "https://4khdhub.one";

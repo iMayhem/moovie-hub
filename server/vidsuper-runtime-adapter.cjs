@@ -1,6 +1,6 @@
 const { activeSources } = require('./vidsuper-runtime.cjs');
 
-const DEFAULT_ORIGIN = (process.env.VIDSUPER_PROXY_ORIGIN || 'https://hahaevilcraft.site').replace(/\/+$/, '');
+const DEFAULT_ORIGIN = (process.env.VIDSUPER_PROXY_ORIGIN || '').replace(/\/+$/, '');
 
 function inlineProxy(origin, url, headers) {
   if (!url) return url;

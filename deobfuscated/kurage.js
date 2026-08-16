@@ -47,7 +47,7 @@ var __async = (_0x5c523a, _0x4cf45c, _0xbbf5e1) => {
   });
 };
 var KURAGE_BASE = "https://kurage.live";
-var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
+var TMDB_API_KEY = process.env.TMDB_API_KEY || "439c478a771f35c05022f9feabcca01c";
 var ANILIST_URL = "https://graphql.anilist.co";
 var ARM_BASE = "https://arm.haglund.dev/api/v2";
 var CINEMETA_URL = "https://v3-cinemeta.strem.io/meta";

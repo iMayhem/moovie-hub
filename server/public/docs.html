@@ -209,7 +209,7 @@ footer {
     <p style="font-size:16px;color:var(--text2);margin-bottom:24px">Just pass a TMDB ID. Works for movies and TV shows.</p>
     <div class="example-box">
       <div class="label">Quick embed</div>
-      <pre><code>&lt;iframe src="<span class="hl">https://scrapers.moovie.fun/embed/movie/550</span>" width="100%" height="500" frameborder="0" allowfullscreen allow="autoplay; encrypted-media"&gt;&lt;/iframe&gt;</code></pre>
+      <pre><code>&lt;iframe src="<span class="hl">https://YOUR_HUB_DOMAIN/embed/?tmdbId=550&type=movie</span>" width="100%" height="500" frameborder="0" allowfullscreen allow="autoplay; encrypted-media"&gt;&lt;/iframe&gt;</code></pre>
     </div>
   </section>
 
@@ -345,30 +345,30 @@ footer {
 
     <div class="example-box">
       <div class="label">Movie (path)</div>
-      <pre><code>&lt;iframe src="<span class="hl">https://scrapers.moovie.fun/embed/movie/550</span>" width="100%" height="500" frameborder="0" allowfullscreen allow="autoplay; encrypted-media"&gt;&lt;/iframe&gt;</code></pre>
+      <pre><code>&lt;iframe src="<span class="hl">https://YOUR_HUB_DOMAIN/embed/?tmdbId=550&type=movie</span>" width="100%" height="500" frameborder="0" allowfullscreen allow="autoplay; encrypted-media"&gt;&lt;/iframe&gt;</code></pre>
     </div>
 
     <div class="example-box">
       <div class="label">TV show (path)</div>
-      <pre><code>&lt;iframe src="<span class="hl">https://scrapers.moovie.fun/embed/tv/1399/1/1</span>" width="100%" height="500" frameborder="0" allowfullscreen allow="autoplay; encrypted-media"&gt;&lt;/iframe&gt;</code></pre>
+      <pre><code>&lt;iframe src="<span class="hl">https://YOUR_HUB_DOMAIN/embed/?tmdbId=1399&type=tv&season=1&episode=1</span>" width="100%" height="500" frameborder="0" allowfullscreen allow="autoplay; encrypted-media"&gt;&lt;/iframe&gt;</code></pre>
     </div>
 
     <div class="example-box">
       <div class="label">Movie (query)</div>
-      <pre><code>&lt;iframe src="<span class="hl">https://scrapers.moovie.fun/embed?tmdb=550</span>" width="100%" height="500" frameborder="0" allowfullscreen allow="autoplay; encrypted-media"&gt;&lt;/iframe&gt;</code></pre>
+      <pre><code>&lt;iframe src="<span class="hl">https://YOUR_HUB_DOMAIN/embed/?tmdbId=550&type=movie</span>" width="100%" height="500" frameborder="0" allowfullscreen allow="autoplay; encrypted-media"&gt;&lt;/iframe&gt;</code></pre>
     </div>
 
     <div class="example-box">
       <div class="label">TV show (query)</div>
-      <pre><code>&lt;iframe src="<span class="hl">https://scrapers.moovie.fun/embed?tmdb=1399&amp;type=tv&amp;season=1&amp;episode=1</span>" width="100%" height="500" frameborder="0" allowfullscreen allow="autoplay; encrypted-media"&gt;&lt;/iframe&gt;</code></pre>
+      <pre><code>&lt;iframe src="<span class="hl">https://YOUR_HUB_DOMAIN/embed/?tmdbId=1399&amp;type=tv&amp;season=1&amp;episode=1</span>" width="100%" height="500" frameborder="0" allowfullscreen allow="autoplay; encrypted-media"&gt;&lt;/iframe&gt;</code></pre>
     </div>
 
     <div class="example-box">
       <div class="label">React</div>
       <pre><code>function MoovieEmbed({ tmdb, type, season, episode }) {
   var src = type === 'tv'
-    ? 'https://scrapers.moovie.fun/embed/tv/' + tmdb + '/' + season + '/' + episode
-    : 'https://scrapers.moovie.fun/embed/movie/' + tmdb;
+    ? 'https://YOUR_HUB_DOMAIN/embed/?tmdbId=' + tmdb + '&type=tv&season=' + season + '&episode=' + episode
+    : 'https://YOUR_HUB_DOMAIN/embed/?tmdbId=' + tmdb + '&type=movie';
   return (
     &lt;iframe src={src} width="100%" height="500"
       frameBorder="0" allowFullScreen
@@ -379,7 +379,7 @@ footer {
 
     <div class="example-box">
       <div class="label">Programmatic</div>
-      <pre><code>fetch('https://scrapers.moovie.fun/api/search?q=550&type=movie')
+      <pre><code>fetch('https://YOUR_HUB_DOMAIN/api/search?q=550&type=movie')
   .then(r => r.json())
   .then(data => {
     var stream = data.results[0].streams[0];
@@ -393,7 +393,7 @@ footer {
 </div>
 
 <footer>
-  scrapers.moovie.fun &mdash; Moovie Embed
+  YOUR_HUB_DOMAIN &mdash; Moovie Embed
 </footer>
 
 </body>

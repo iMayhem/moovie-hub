@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>peestream - Ultimate Embed Player</title>
+  <title>Moovie Hub - Embed Player</title>
 
   <!-- Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -637,12 +637,12 @@
 
       <section id="docs" class="section-container">
         <h2 class="section-title">Documentation</h2>
-        <p class="section-desc">Implement peestream easily using our standard iframe URL templates.</p>
+        <p class="section-desc">Implement Moovie Hub easily using our standard iframe URL templates.</p>
 
         <div class="docs-grid">
           <div class="doc-card">
             <div class="doc-card-title">Movies API</div>
-            <div class="doc-code-block" id="code-movie-tpl">https://peestream.in/embed/?tmdbId={tmdbId}&type=movie</div>
+            <div class="doc-code-block" id="code-movie-tpl">https://YOUR_HUB_DOMAIN/embed/?tmdbId={tmdbId}&type=movie</div>
             <button class="doc-copy-btn" onclick="copyText('code-movie-tpl')">
               <i class="fa-regular fa-copy"></i> copy url template
             </button>
@@ -650,7 +650,7 @@
 
           <div class="doc-card">
             <div class="doc-card-title">TV Shows API</div>
-            <div class="doc-code-block" id="code-tv-tpl">https://peestream.in/embed/?tmdbId={tmdbId}&type=tv&season={season}&episode={episode}</div>
+            <div class="doc-code-block" id="code-tv-tpl">https://YOUR_HUB_DOMAIN/embed/?tmdbId={tmdbId}&type=tv&season={season}&episode={episode}</div>
             <button class="doc-copy-btn" onclick="copyText('code-tv-tpl')">
               <i class="fa-regular fa-copy"></i> copy url template
             </button>
@@ -662,7 +662,7 @@
 
     <!-- ----------------------------------
          2. PLAYER VIEW (tmdbId provided)
-         Loads the real peestream smov player
+         Loads the player frontend
          ---------------------------------- -->
     <div id="player-view" class="player-view">
       <iframe id="smov-frame" class="smov-frame" allow="autoplay; fullscreen; picture-in-picture; encrypted-media" allowfullscreen referrerpolicy="origin" sandbox="allow-scripts allow-same-origin allow-popups allow-presentation"></iframe>
@@ -700,7 +700,8 @@
             ? `tmdb-show-${encodeURIComponent(tmdbId)}/${encodeURIComponent(season || 1)}/${encodeURIComponent(episode || 1)}`
             : `tmdb-movie-${encodeURIComponent(tmdbId)}`;
         }
-        smovFrame.src = `https://peestream.in/media/${mediaPath}`;
+        const playerBase = (urlParams.get('player') || window.location.origin).replace(/\/+$/, '');
+        smovFrame.src = `${playerBase}/media/${mediaPath}`;
       } else {
         landingView.style.display = 'flex';
         playerView.style.display = 'none';
@@ -756,7 +757,7 @@
         .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
         .then(() => {
           loadServers();
-          alert(name ? `Scraper renamed to "${name}". The peestream player will show it within a few minutes.` : `Scraper name reset to default.`);
+          alert(name ? `Scraper renamed to "${name}". The player will show it within a few minutes.` : `Scraper name reset to default.`);
         })
         .catch(() => alert('Failed to rename scraper.'));
     }
