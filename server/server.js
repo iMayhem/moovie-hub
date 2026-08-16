@@ -395,7 +395,7 @@ app.use(express.json());
 
 // ============ Authentication & Locked Panel ============
 const ADMIN_USERNAME = process.env.ADMIN_USER || 'admin';
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || crypto.randomBytes(12).toString('hex');
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
 const authSessions = new Set();
 
 function isReqAuthenticated(req) {
@@ -2051,11 +2051,7 @@ async function start() {
   server.listen(port, '0.0.0.0', () => {
     console.log(`Server running on http://0.0.0.0:${port}`);
     console.log(`  Proxy: /proxy  |  Docs: /docs`);
-    if (!process.env.ADMIN_PASSWORD) {
-      console.log(`  Admin: ${ADMIN_USERNAME} / ${ADMIN_PASSWORD}  (set ADMIN_PASSWORD env to change)`);
-    } else {
-      console.log(`  Admin: ${ADMIN_USERNAME} / (from ADMIN_PASSWORD env)`);
-    }
+    console.log(`  Admin: ${ADMIN_USERNAME} / ${ADMIN_PASSWORD}  (set ADMIN_USER/ADMIN_PASSWORD env to change)`);
     const os = require('os');
     const nets = os.networkInterfaces();
     for (const name of Object.keys(nets)) {

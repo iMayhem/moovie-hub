@@ -31,7 +31,7 @@ Open `http://localhost:3000` — the dashboard shows a login screen on first vis
 | `PORT` | HTTP port | `3000` |
 | `TMDB_API_KEY` | TMDB key (used by providers + `/api/tmdb/search` + subtitles) | `config.json` value |
 | `ADMIN_USER` | Dashboard login username | `admin` |
-| `ADMIN_PASSWORD` | Dashboard login password | random, printed in console at startup |
+| `ADMIN_PASSWORD` | Dashboard login password | `admin123` (change it!) |
 | `CF_PROXY_BASE` | External Cloudflare header proxy base URL (e.g. `https://proxy.example.com`) | unset → hub's own `/proxy` used |
 | `PROXY_BASE` | External proxy base for providers that proxy streams | unset → relative `/proxy` used |
 | `LEGACY_PROXY_DOMAIN` | Domain of a legacy wrapper proxy to unwrap in provider URLs | unset → no unwrapping |
@@ -82,6 +82,5 @@ Restart the hub and toggle it on in the dashboard.
 
 ## Auth
 
-Dashboard lock screen protects admin actions. Credentials come from
-`ADMIN_USER` / `ADMIN_PASSWORD` env; if unset, a random password is generated and
-printed to the console at startup.
+Dashboard lock screen protects admin actions. Default credentials: `admin` / `admin123`.
+Change them via `ADMIN_USER` / `ADMIN_PASSWORD` env — do not deploy with the default.
