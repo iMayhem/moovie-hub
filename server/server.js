@@ -1,0 +1,2044 @@
+const express = require('express');
+const http = require('http');
+const { WebSocketServer } = require('ws');
+const cors = require('cors');
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+const { Readable } = require('stream');
+const { execFile } = require('child_process');
+const { HttpProxyAgent } = require('http-proxy-agent');
+const { HttpsProxyAgent } = require('https-proxy-agent');
+const analytics = require('./analytics');
+const { setupWebSocket } = require('./watch-together');
+
+const CONFIG_PATH = path.join(__dirname, 'config.json');
+const USER_PROVIDERS_PATH = path.join(__dirname, 'providers.json');
+const PROVIDERS_DIR = path.join(__dirname, '..', 'deobfuscated');
+const MANIFEST_PATH = path.join(__dirname, '..', 'manifest.json');
+const os = require('os');
+
+const PORT = parseInt(process.env.PORT, 10) || null;
+
+// ---- Resource guards: cap concurrent scrapes and watch memory ---- 
+const MAX_CONCURRENT_SCRAPES = 6;
+let activeScrapes = 0;
+let scrapeWaiters = [];
+
+async function acquireScrapeSlot(timeoutMs) {
+  if (activeScrapes < MAX_CONCURRENT_SCRAPES) {
+    activeScrapes++;
+    return;
+  }
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      const idx = scrapeWaiters.indexOf(waiter);
+      if (idx !== -1) scrapeWaiters.splice(idx, 1);
+      reject(new Error('Server busy, try again'));
+    }, timeoutMs || 30000);
+    const waiter = () => { clearTimeout(timer); resolve(); };
+    scrapeWaiters.push(waiter);
+  });
+  activeScrapes++;
+}
+
+function releaseScrapeSlot() {
+  activeScrapes = Math.max(0, activeScrapes - 1);
+  const next = scrapeWaiters.shift();
+  if (next) next();
+}
+
+let config = loadConfig();
+let providers = {};
+let providerMeta = {};
+const streamStore = new Map();
+let streamIdCounter = 0;
+
+function generateStreamId() {
+  return (++streamIdCounter).toString(36) + crypto.randomBytes(4).toString('hex');
+}
+
+function toProxyUrl(url, headers, type) {
+  if (typeof url !== 'string') return url;
+  // Unwrap the legacy cf-header-proxy.moovie.fun wrapper (dead). The real media
+  // URL lives in its `url` query param; if that is a dl.php "Link Generator" page,
+  // the actual video URL is in its `link` query param. No proxying is used.
+  if (url.includes('cf-header-proxy.moovie.fun')) {
+    try {
+      const target = new URL(url).searchParams.get('url');
+      if (target) {
+        const inner = new URL(target);
+        const link = inner.searchParams.get('link');
+        return link || target;
+      }
+    } catch {}
+  }
+  return url;
+}
+
+function buildProxyUrl(stream, req) {
+  if (!stream || typeof stream.url !== 'string') return null;
+  try {
+    const u = encodeB64url(stream.url);
+    let url = `https://${req.headers.host}/proxy?u=${u}`;
+    const h = stream.headers || {};
+    const keys = Object.keys(h).filter(k => h[k] != null);
+    if (keys.length) url += `&h=${encodeB64url(JSON.stringify(Object.fromEntries(keys.map(k => [k, h[k]]))))}`;
+    return url;
+  } catch {
+    return null;
+  }
+}
+
+function buildCfProxyUrl(stream) {
+  if (!stream || typeof stream.url !== 'string') return null;
+  try {
+    // Store the real media URL in the in-memory stream store and hand the
+    // client an opaque id, so the origin URL never appears in query params.
+    const storeId = generateStreamId();
+    streamStore.set(storeId, {
+      ts: Date.now(),
+      url: stream.url,
+      headers: stream.headers || {},
+      type: stream.type || 'm3u8',
+    });
+    return `https://cf-header-proxy.moovie.fun/?id=${storeId}`;
+  } catch {
+    return null;
+  }
+}
+
+
+function proxyUrlForMode(stream, req, mode) {
+  if (!stream || typeof stream.url !== 'string') return null;
+  if (mode === '0') return null;
+  if (mode === 'vps') return buildProxyUrl(stream, req);
+  return buildCfProxyUrl(stream);
+}
+
+function wrapUrlWithProxy(url, headers, mode, req) {
+  if (!url || !url.startsWith('http')) return url;
+  if (mode === '0') return url;
+  const stream = { url, headers: headers || {} };
+  if (mode === 'vps') return buildProxyUrl(stream, req) || url;
+  return buildCfProxyUrl(stream) || url;
+}
+
+function makeStreamUrlsAbsolute(mwStream, host) {
+  if (!host) return;
+  const base = `https://${host}`;
+  if (mwStream.playlist && mwStream.playlist.startsWith('/')) {
+    mwStream.playlist = base + mwStream.playlist;
+  }
+  if (mwStream.qualities) {
+    for (const entry of Object.values(mwStream.qualities)) {
+      if (entry.url && entry.url.startsWith('/')) {
+        entry.url = base + entry.url;
+      }
+    }
+  }
+}
+
+// Stream store auto-cleanup every 5 minutes
+const STREAM_TTL = 5 * 60 * 1000;
+setInterval(function() {
+  const now = Date.now();
+  for (const [key, entry] of streamStore) {
+    if (now - entry.ts > STREAM_TTL) streamStore.delete(key);
+  }
+}, 60 * 1000);
+
+function loadConfig() {
+  let cfg;
+  try {
+    cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+  } catch {
+    cfg = { port: 3000, tmdbApiKey: '', autoplay: true, introSkip: false, streamProxy: false, proxy: { enabled: false }, globalTimeout: 12000, maxResultsPerProvider: 20, providers: {}, qualityFilter: { '4k': true, '1080': true, '720': true, 'sd': true, 'unknown': true } };
+  }
+  if (!cfg.providers) cfg.providers = {};
+  // Merge user's provider overrides from gitignored file
+  try {
+    const user = JSON.parse(fs.readFileSync(USER_PROVIDERS_PATH, 'utf8'));
+    if (user && typeof user === 'object') {
+      for (const [id, p] of Object.entries(user)) {
+        if (cfg.providers[id]) {
+          if (typeof p.enabled === 'boolean') cfg.providers[id].enabled = p.enabled;
+          if (typeof p.priority === 'number') cfg.providers[id].priority = p.priority;
+          if (Array.isArray(p.disabledServers)) cfg.providers[id].disabledServers = p.disabledServers;
+          if (typeof p.name === 'string') cfg.providers[id].name = p.name;
+        } else {
+          // Provider exists in user file but not in defaults — add it
+          cfg.providers[id] = { enabled: p.enabled !== false, priority: p.priority || Object.keys(cfg.providers).length + 1, disabledServers: p.disabledServers || [] };
+        }
+      }
+    }
+  } catch {}
+  return cfg;
+}
+
+function saveConfig() {
+  const providersOnly = {};
+  for (const [id, p] of Object.entries(config.providers || {})) {
+    providersOnly[id] = {
+      enabled: p.enabled,
+      priority: p.priority,
+      disabledServers: p.disabledServers || [],
+      proxyMode: p.proxyMode || '0',
+    };
+    if (typeof p.name === 'string' && p.name.trim()) providersOnly[id].name = p.name.trim();
+  }
+  fs.writeFileSync(USER_PROVIDERS_PATH, JSON.stringify(providersOnly, null, 2));
+}
+
+function saveNonProviderSettings() {
+  const cfgClean = { ...config };
+  delete cfgClean.providers;
+  fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfgClean, null, 2));
+}
+
+const CLIENT_PROVIDERS = [
+  { id: 'icefy', name: 'icefy', supportedTypes: ['movie', 'tv'] },
+  { id: 'yp-hdbox-1', name: 'yp-hdbox-1', supportedTypes: ['movie', 'tv'] },
+  { id: 'yp-hdbox-2', name: 'yp-hdbox-2', supportedTypes: ['movie', 'tv'] },
+  { id: 'yp-flixhq-1', name: 'yp-flixhq-1', supportedTypes: ['movie', 'tv'] },
+  { id: 'yp-flixhq-2', name: 'yp-flixhq-2', supportedTypes: ['movie', 'tv'] },
+  { id: 'yp-moviebox-1', name: 'yp-moviebox-1', supportedTypes: ['movie', 'tv'] },
+  { id: 'yp-moviebox-2', name: 'yp-moviebox-2', supportedTypes: ['movie', 'tv'] },
+  { id: 'tugaflix', name: 'tugaflix', supportedTypes: ['movie', 'tv'] },
+  { id: 'fsonline', name: 'fsonline', supportedTypes: ['movie', 'tv'] },
+  { id: 'animeflv', name: 'animeflv', supportedTypes: ['tv'] },
+  { id: 'cuevana3', name: 'cuevana3', supportedTypes: ['movie', 'tv'] },
+  { id: 'fullhdfilmizle', name: 'fullhdfilmizle', supportedTypes: ['movie', 'tv'] }
+];
+
+function initProviderConfig() {
+  const files = fs.readdirSync(PROVIDERS_DIR).filter(f => f.endsWith('.js'));
+  const allIds = [
+    ...files.map(f => path.basename(f, '.js')),
+    ...CLIENT_PROVIDERS.map(p => p.id)
+  ];
+  for (const id of allIds) {
+    if (!config.providers[id]) {
+      config.providers[id] = { enabled: true, priority: Object.keys(config.providers).length + 1, disabledServers: [] };
+    }
+  }
+  saveConfig();
+}
+
+async function loadProviders() {
+  const files = fs.readdirSync(PROVIDERS_DIR).filter(f => f.endsWith('.js'));
+  for (const file of files) {
+    const id = path.basename(file, '.js');
+    try {
+      const filePath = path.join(PROVIDERS_DIR, file);
+      delete require.cache[require.resolve(filePath)];
+      const mod = require(filePath);
+      if (mod && typeof mod.getStreams === 'function') {
+        providers[id] = mod;
+        providerMeta[id] = {
+          name: mod.name || id,
+          supportedTypes: mod.supportedTypes || ['movie', 'tv'],
+        };
+      }
+    } catch (e) {
+      console.error(`Failed to load provider ${id}:`, e);
+    }
+  }
+
+  for (const cp of CLIENT_PROVIDERS) {
+    providerMeta[cp.id] = {
+      name: cp.name,
+      supportedTypes: cp.supportedTypes,
+      file: 'Client-side Scraper',
+      isClientSide: true
+    };
+  }
+}
+
+function createProxyAgent(targetUrl) {
+  if (!config.proxy || !config.proxy.enabled || !config.proxy.host) return null;
+  const proxyUrl = `http://${config.proxy.host}:${config.proxy.port}`;
+  const isHttps = targetUrl.startsWith('https');
+  const Agent = isHttps ? HttpsProxyAgent : HttpProxyAgent;
+  return new Agent(proxyUrl);
+}
+
+async function fetchWithProxy(url, opts = {}) {
+  const agent = createProxyAgent(url);
+  if (agent) {
+    opts.agent = agent;
+  }
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), config.globalTimeout || 12000);
+  opts.signal = controller.signal;
+  try {
+    const res = await fetch(url, opts);
+    return res;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+// Patch global fetch for providers to use proxy
+const originalFetch = global.fetch;
+global.fetch = async (url, opts = {}) => {
+  const controller = new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(),
+    config.globalTimeout || 12000,
+  );
+  const upstreamSignal = opts.signal;
+  const abortFromUpstream = () => controller.abort();
+  if (upstreamSignal) {
+    if (upstreamSignal.aborted) controller.abort();
+    else upstreamSignal.addEventListener('abort', abortFromUpstream, { once: true });
+  }
+  const agent = createProxyAgent(typeof url === 'string' ? url : url.url);
+  if (agent) {
+    opts.agent = agent;
+  }
+  try {
+    return await originalFetch(url, { ...opts, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+    upstreamSignal?.removeEventListener('abort', abortFromUpstream);
+  }
+};
+
+function extractStreamServers(streams) {
+  const servers = new Set();
+  for (const s of streams) {
+    if (s.name) servers.add(s.name);
+  }
+  return [...servers].sort();
+}
+
+const NON_STREAMABLE_EXTS = /\.(zip|rar|7z|tar|gz|mkv|avi|mov|wmv|flv|iso|torrent)(\?|$)/i;
+
+function isStreamableUrl(url) {
+  if (!url) return false;
+  // Reject download archive extensions
+  if (NON_STREAMABLE_EXTS.test(url.split('?')[0])) return false;
+  return true;
+}
+
+function filterStreams(streams, providerId) {
+  const pConfig = config.providers[providerId];
+  let filtered = streams;
+  if (pConfig && pConfig.disabledServers && pConfig.disabledServers.length > 0) {
+    filtered = filtered.filter(s => !pConfig.disabledServers.some(d => s.name && s.name.includes(d)));
+  }
+  // Remove streams whose URL is a non-streamable download archive
+  filtered = filtered.filter(s => isStreamableUrl(s.url));
+  return filtered;
+}
+
+function getEnabledProvidersSorted() {
+  return Object.entries(config.providers)
+    .filter(([id, p]) => p.enabled && providers[id])
+    .sort((a, b) => (a[1].priority || 999) - (b[1].priority || 999));
+}
+
+const app = express();
+app.use(cors());
+
+app.use(cors());
+
+// ---- response backpressure watchdog ----
+// A client that stops reading leaves its socket backed up. Response data sits
+// in the socket write queue, never drains, and libuv retries the same writev
+// in a tight loop (EAGAIN storm -> 100% CPU). Any response whose socket stays
+// backed up for >5s is destroyed, breaking the loop. Watched until the socket
+// fully drains (covers res.end() final flushes too, not just res.write()).
+const activeResponses = new Set();
+const responseWatchdog = setInterval(() => {
+    const now = Date.now();
+    for (const r of activeResponses) {
+        if (r._wdDone || r.destroyed) { activeResponses.delete(r); continue; }
+        const sock = r.socket;
+        if (!sock) { r._wdDone = true; continue; }
+        const pending = sock.writableLength || 0;
+        if (pending > 0) {
+            if (!r._wdSince) r._wdSince = now;
+            else if (now - r._wdSince > 5000) {
+                r._wdDone = true;
+                activeResponses.delete(r);
+                try { r.destroy(); } catch (e) {}
+                continue;
+            }
+        } else {
+            r._wdSince = 0;
+            if (r.writableEnded || r.finished) r._wdDone = true;
+        }
+    }
+}, 500);
+app.use((req, res, next) => {
+    activeResponses.add(res);
+    next();
+});app.get('/api/stream', (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  const { id } = req.query;
+  if (!id || !streamStore.has(id)) {
+    return res.status(404).json({ error: 'Stream not found or expired' });
+  }
+  const entry = streamStore.get(id);
+  res.json({ url: entry.url, headers: entry.headers, type: entry.type });
+});
+app.use(express.json());
+
+// ============ Authentication & Locked Panel ============
+const ADMIN_USERNAME = process.env.ADMIN_USER || 'admin';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'peestream2026';
+const authSessions = new Set();
+
+function isReqAuthenticated(req) {
+  const authHeader = req.headers['authorization'];
+  const token = (authHeader && authHeader.startsWith('Bearer ')) ? authHeader.slice(7) : (req.headers['x-admin-token'] || req.query.token);
+  return token && authSessions.has(token);
+}
+
+app.post('/api/auth/login', (req, res) => {
+  const { username, password } = req.body || {};
+  if (username === ADMIN_USERNAME && password === ADMIN_PASSWORD) {
+    const token = crypto.randomBytes(32).toString('hex');
+    authSessions.add(token);
+    return res.json({ success: true, token });
+  }
+  return res.status(401).json({ success: false, error: 'Invalid username or password' });
+});
+
+app.get('/api/auth/check', (req, res) => {
+  res.json({ authenticated: Boolean(isReqAuthenticated(req)) });
+});
+
+app.post('/api/auth/logout', (req, res) => {
+  const authHeader = req.headers['authorization'];
+  const token = (authHeader && authHeader.startsWith('Bearer ')) ? authHeader.slice(7) : req.headers['x-admin-token'];
+  if (token) authSessions.delete(token);
+  res.json({ success: true });
+});
+
+
+// ============ Client Log Storage ============
+const clientLogs = [];
+const clientLogSseClients = new Set();
+
+function writeClientLogSse(res, entry) {
+  try {
+    const ok = res.write(`data: ${JSON.stringify(entry)}\n\n`);
+    if (ok === false) {
+      // Backpressure: client stopped reading - drop it so we don't queue forever
+      clientLogSseClients.delete(res);
+      try { res.destroy(); } catch (e) {}
+    }
+  } catch (e) { clientLogSseClients.delete(res); try { res.destroy(); } catch (e2) {} }
+}
+
+app.post('/api/scrape/client-log', (req, res) => {
+  try {
+    const { type, message, tmdbId, sid } = req.body || {};
+    const logEntry = {
+      timestamp: new Date().toISOString(),
+      type: type || 'info',
+      message: message || '',
+      tmdbId: tmdbId || null,
+      sid: sid || null
+    };
+    clientLogs.push(logEntry);
+    if (clientLogs.length > 1000) clientLogs.shift();
+    for (const client of clientLogSseClients) writeClientLogSse(client, { ...logEntry, source: 'client', time: logEntry.timestamp });
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/scrape/client-log', (req, res) => {
+  const { sid, tmdbId, limit = 100 } = req.query;
+  let filtered = clientLogs;
+  if (sid) filtered = filtered.filter(l => l.sid === sid);
+  if (tmdbId) filtered = filtered.filter(l => String(l.tmdbId) === String(tmdbId));
+  res.json(filtered.slice(-parseInt(limit)));
+});
+
+// SSE feed consumed by the Embed Debug dashboard panels.
+app.get('/api/scrape/log', (req, res) => {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'Access-Control-Allow-Origin': '*',
+  });
+  res.write(': connected\n\n');
+  // This feed is intentionally live-only. Replaying the global buffer here
+  // makes the dashboard look like the current player is failing repeatedly
+  // when the entries actually belong to older sessions and other TMDB IDs.
+  clientLogSseClients.add(res);
+  const pingTimer = setInterval(() => {
+    try { res.write(': ping\n\n'); } catch (e) { clearInterval(pingTimer); clientLogSseClients.delete(res); }
+  }, 25000);
+  req.on('close', () => {
+    clearInterval(pingTimer);
+    clientLogSseClients.delete(res);
+  });
+});
+
+// ============ movie-web SSE Provider API (before static to ensure priority) ============
+
+function parseQuality(q) {
+  if (!q) return -1;
+  q = q.toLowerCase().replace(/p$/, '');
+  if (q === 'auto' || q === 'adaptive' || q === 'multi') return -1;
+  if (q === '4k' || q === 'uhd' || q === '2160') return 2160;
+  const n = parseInt(q);
+  return isNaN(n) ? -1 : n;
+}
+
+function streamEffectiveQuality(s) {
+  const explicit = parseQuality(s && s.quality);
+  if (explicit > 0) return explicit;
+  if (s && s.qualities && typeof s.qualities === 'object') {
+    const keys = Object.keys(s.qualities).map(parseQuality).filter(v => v > 0);
+    return keys.length ? Math.max(...keys) : -1;
+  }
+  return explicit;
+}
+
+function sortStreamsByQuality(streams) {
+  return (streams || []).sort((a, b) => streamEffectiveQuality(b) - streamEffectiveQuality(a));
+}
+
+// Convert a scraper stream to movie-web Stream format
+function scraperStreamToMwStream(stream, sourceId) {
+  const hasHeaders = stream.headers && typeof stream.headers === 'object' && Object.keys(stream.headers).length > 0;
+  const flags = config.streamProxy || !hasHeaders ? ['cors-allowed'] : ['ip-locked'];
+  const mwHeaders = config.streamProxy ? undefined : (hasHeaders ? stream.headers : undefined);
+
+  // Handle multi-quality streams (object with quality keys)
+  if (stream.qualities && typeof stream.qualities === 'object') {
+    const qualities = {};
+    // Highest quality first so players try the best rendition first
+    const qualityKeys = Object.keys(stream.qualities).sort((a, b) => parseQuality(b) - parseQuality(a));
+    for (const q of qualityKeys) {
+      const entry = stream.qualities[q];
+      if (!entry || !entry.url) continue;
+      if (!isStreamableUrl(entry.url)) {
+        console.log(`[scraperStreamToMwStream] Skipping non-streamable quality "${q}": ${entry.url.slice(0, 80)}`);
+        continue;
+      }
+      qualities[q] = { type: entry.type || 'mp4', url: toProxyUrl(entry.url, stream.headers, entry.type) };
+    }
+    if (Object.keys(qualities).length === 0) return null; // all qualities filtered
+    return {
+      type: 'file',
+      id: sourceId + '-' + Date.now(),
+      flags,
+      captions: [],
+      qualities,
+      headers: mwHeaders,
+    };
+  }
+
+  const isHls = stream.type === 'm3u8' || (stream.url && stream.url.includes('.m3u8'));
+  if (isHls) {
+    return {
+      type: 'hls',
+      playlist: toProxyUrl(stream.url, stream.headers, 'm3u8'),
+      id: sourceId + '-' + Date.now(),
+      flags,
+      captions: [],
+      headers: mwHeaders,
+    };
+  }
+
+  // Single URL stream — reject non-streamable
+  if (!isStreamableUrl(stream.url)) {
+    console.log(`[scraperStreamToMwStream] Skipping non-streamable stream url: ${(stream.url || '').slice(0, 80)}`);
+    return null;
+  }
+
+  const quality = stream.quality || 'unknown';
+  const qualities = {};
+  qualities[quality] = { type: 'mp4', url: toProxyUrl(stream.url, stream.headers, 'mp4') };
+  return {
+    type: 'file',
+    id: sourceId + '-' + Date.now(),
+    flags,
+    captions: [],
+    qualities,
+    headers: mwHeaders,
+  };
+}
+
+// GET /metadata - Return all providers in MetaOutput format
+app.get('/metadata', (req, res) => {
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  const result = [];
+  const sorted = Object.entries(providerMeta)
+    .sort((a, b) => (config.providers[a[0]]?.priority || 999) - (config.providers[b[0]]?.priority || 999));
+  for (const [id, meta] of sorted) {
+    const pConfig = config.providers[id];
+    if (!pConfig || pConfig.enabled === false) continue;
+    result.push([{
+      id,
+      name: (pConfig.name && pConfig.name.trim()) || meta.name || id,
+      type: 'source',
+      rank: pConfig.priority || 999,
+      flags: [],
+      mediaTypes: meta.supportedTypes || ['movie', 'tv'],
+    }]);
+  }
+  res.json(result);
+});
+
+function sendSSE(req, res) {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'Access-Control-Allow-Origin': '*',
+  });
+  res.flushHeaders();
+  let cancelled = false;
+  let stuckSince = 0;
+  res.on('error', () => { cancelled = true; });
+  req.on('close', () => { cancelled = true; });
+  req.on('error', () => { cancelled = true; });
+  res.on('close', () => { cancelled = true; });
+  function emit(event, data) {
+    if (cancelled) return;
+    try {
+      const ok = res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+      if (ok === false) {
+        // Client stopped reading. Give it a few seconds to drain, then kill it.
+        const now = Date.now();
+        if (!stuckSince) stuckSince = now;
+        else if (now - stuckSince > 5000) {
+          cancelled = true;
+          try { res.destroy(); } catch (e) {}
+        }
+      } else {
+        stuckSince = 0;
+      }
+    } catch (e) { cancelled = true; try { res.destroy(); } catch (e2) {} }
+  }
+  return { emit, cancelled: () => cancelled };
+}
+
+// GET /scrape - SSE endpoint that runs all scrapers (movie-web runAll)
+app.get('/scrape', async (req, res) => {
+  const { type, tmdbId, season, episode, seasonNumber, episodeNumber } = req.query;
+  if (!tmdbId) return res.status(400).json({ error: 'tmdbId required' });
+  try {
+    await acquireScrapeSlot();
+  } catch (e) {
+    return res.status(429).json({ error: e.message });
+  }
+  const sse = sendSSE(req, res);
+  if (sse.cancelled()) { releaseScrapeSlot(); return; }
+
+  const enabledProviders = getEnabledProvidersSorted();
+  const sourceIds = enabledProviders.map(([id]) => id);
+
+  let completedAny = false;
+  sse.emit('init', { sourceIds });
+
+  // Run providers in priority order and stop as soon as one produces a
+  // usable stream — the player only needs a single working link.
+  for (const [id, pConfig] of enabledProviders) {
+    if (completedAny || sse.cancelled()) break;
+    try {
+      sse.emit('start', id);
+
+      // Emit realtime progress fill while the scraper works
+      let progress = 0;
+      const progressTimer = setInterval(() => {
+        if (sse.cancelled()) { clearInterval(progressTimer); return; }
+        progress = Math.min(progress + 4, 85);
+        sse.emit('update', { id, percentage: progress, status: 'pending' });
+      }, 400);
+
+      const mod = providers[id];
+      const mediaType = type || 'movie';
+      const sNum = season || seasonNumber || null;
+      const eNum = episode || episodeNumber || null;
+      const streams = await mod.getStreams(tmdbId, mediaType, sNum, eNum);
+      clearInterval(progressTimer);
+      if (completedAny || sse.cancelled()) continue;
+
+      const filtered = sortStreamsByQuality(filterStreams(streams || [], id));
+
+      if (filtered && filtered.length > 0) {
+        let foundValid = false;
+        for (let i = 0; i < filtered.length; i++) {
+          const stream = filtered[i];
+          const mwStream = scraperStreamToMwStream(stream, id);
+          if (!mwStream) continue;
+          foundValid = true;
+          const pct = Math.round(85 + ((i + 1) / filtered.length) * 15);
+          completedAny = true;
+          sse.emit('update', { id, percentage: pct, status: 'success' });
+          makeStreamUrlsAbsolute(mwStream, req.headers.host);
+          const pMode = (config.providers[id] && config.providers[id].proxyMode) || req.query.proxy || '0';
+          if (pMode !== '0') {
+            if (mwStream.playlist) mwStream.playlist = wrapUrlWithProxy(mwStream.playlist, mwStream.headers, pMode, req);
+            if (mwStream.url) mwStream.url = wrapUrlWithProxy(mwStream.url, mwStream.headers, pMode, req);
+            if (mwStream.qualities) {
+              for (const q of Object.values(mwStream.qualities)) {
+                if (q && q.url) q.url = wrapUrlWithProxy(q.url, mwStream.headers, pMode, req);
+              }
+            }
+          }
+          const output = { sourceId: id, stream: mwStream };
+          sse.emit('completed', output);
+          break;
+        }
+        if (!foundValid) {
+          sse.emit('update', { id, percentage: 100, status: 'notfound', reason: 'No streamable qualities/sources found' });
+        }
+      } else {
+        sse.emit('update', { id, percentage: 100, status: 'notfound', reason: 'No streams returned' });
+      }
+    } catch (e) {
+      sse.emit('update', { id, percentage: 100, status: 'failure', error: e.message });
+    }
+  }
+
+  if (completedAny) {
+    if (!sse.cancelled()) sse.emit('done', '');
+  } else if (!sse.cancelled()) {
+    sse.emit('noOutput', '');
+  }
+  res.end();
+  releaseScrapeSlot();
+});
+
+// GET /scrape/source - SSE endpoint for a single source
+app.get('/scrape/source', async (req, res) => {
+  const { id, type, tmdbId, season, episode, seasonNumber, episodeNumber } = req.query;
+  if (!id || !tmdbId) return res.status(400).json({ error: 'id and tmdbId required' });
+  try {
+    await acquireScrapeSlot();
+  } catch (e) {
+    return res.status(429).json({ error: e.message });
+  }
+  const sse = sendSSE(req, res);
+  if (sse.cancelled()) { releaseScrapeSlot(); return; }
+
+  const mod = providers[id];
+  if (!mod) {
+    sse.emit('error', { name: 'NotFoundError', message: `Source ${id} not found` });
+    res.end();
+    releaseScrapeSlot();
+    return;
+  }
+
+  try {
+    sse.emit('start', id);
+
+    // Emit realtime progress fill while the scraper works
+    let progress = 0;
+    const progressTimer = setInterval(() => {
+      if (sse.cancelled()) { clearInterval(progressTimer); return; }
+      progress = Math.min(progress + 4, 85);
+      sse.emit('update', { id, percentage: progress, status: 'pending' });
+    }, 400);
+
+    const mediaType = ['show', 'series'].includes(String(type || '').toLowerCase()) ? 'tv' : (type || 'movie');
+    const sNum = season || seasonNumber || null;
+    const eNum = episode || episodeNumber || null;
+    const streams = await mod.getStreams(tmdbId, mediaType, sNum, eNum);
+    clearInterval(progressTimer);
+    if (sse.cancelled()) { releaseScrapeSlot(); return; }
+
+    const filtered = sortStreamsByQuality(filterStreams(streams || [], id));
+
+    if (filtered && filtered.length > 0) {
+      const mwStreams = filtered
+        .map((s, i) => scraperStreamToMwStream(s, id + '-' + i))
+        .filter(Boolean);
+      if (mwStreams.length > 0) {
+        sse.emit('update', { id, percentage: 100, status: 'success' });
+        mwStreams.forEach(s => makeStreamUrlsAbsolute(s, req.headers.host));
+        const output = { embeds: [], stream: mwStreams };
+        sse.emit('completed', output);
+      } else {
+        sse.emit('update', { id, percentage: 100, status: 'notfound', reason: 'No streamable qualities/sources found' });
+        sse.emit('noOutput', '');
+      }
+    } else {
+      sse.emit('update', { id, percentage: 100, status: 'notfound', reason: 'No streams returned' });
+      sse.emit('noOutput', '');
+    }
+  } catch (e) {
+    sse.emit('update', { id, percentage: 100, status: 'failure', error: e.message });
+    sse.emit('noOutput', '');
+  }
+
+  // Tell EventSource clients that the scrape ended normally before closing
+  // the connection. Without this, the browser reports a reconnect/error even
+  // after a successful completed event.
+  if (!sse.cancelled()) sse.emit('done', '');
+  res.end();
+  releaseScrapeSlot();
+});
+
+// GET /scrape/embed - SSE endpoint for a single embed (not supported by these scrapers)
+app.get('/scrape/embed', async (req, res) => {
+  const { id, url } = req.query;
+  const sse = sendSSE(req, res);
+  if (sse.cancelled()) return;
+
+  sse.emit('start', id || 'embed');
+  sse.emit('update', { id: id || 'embed', percentage: 100, status: 'notfound', reason: 'Embed scraping not supported' });
+  sse.emit('noOutput', '');
+  res.end();
+});
+
+app.use(express.static(path.join(__dirname, 'public')));
+
+// ============ API Routes ============
+
+// List all providers with config
+app.get('/api/providers', (req, res) => {
+  const result = {};
+  for (const [id, meta] of Object.entries(providerMeta)) {
+    result[id] = {
+      ...meta,
+      name: (config.providers[id]?.name && config.providers[id].name.trim()) || meta.name || id,
+      enabled: config.providers[id]?.enabled ?? true,
+      priority: config.providers[id]?.priority ?? 999,
+      disabledServers: config.providers[id]?.disabledServers || [],
+      proxyMode: config.providers[id]?.proxyMode || '1',
+    };
+  }
+  res.json(result);
+});
+
+// Set/clear a custom display name for a provider (rename scraper)
+app.post('/api/providers/:id/name', (req, res) => {
+  const { id } = req.params;
+  if (!config.providers[id]) return res.status(404).json({ error: 'Provider not found' });
+  const raw = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+  const previous = config.providers[id].name || null;
+  if (raw) {
+    config.providers[id].name = raw;
+  } else {
+    delete config.providers[id].name;
+  }
+  saveConfig();
+  const pConfig = config.providers[id];
+  const meta = providerMeta[id] || {};
+  res.json({ id, name: (pConfig.name && pConfig.name.trim()) || meta.name || id, previous });
+});
+
+// Set per-provider proxy mode: '1' = Cloudflare, 'vps' = VPS, '0' = Direct
+app.post('/api/providers/:id/proxy-mode', (req, res) => {
+  const { id } = req.params;
+  const { mode } = req.body;
+  if (!config.providers[id]) return res.status(404).json({ error: 'Provider not found' });
+  if (!['0', '1', 'vps'].includes(mode)) return res.status(400).json({ error: 'Invalid mode' });
+  config.providers[id].proxyMode = mode;
+  saveConfig();
+  res.json({ id, proxyMode: mode });
+});
+
+// Bulk reorder providers — atomic, single request
+app.post('/api/providers/reorder', (req, res) => {
+  const { order } = req.body;
+  if (!Array.isArray(order) || !order.length) return res.status(400).json({ error: 'Missing order array' });
+  for (let i = 0; i < order.length; i++) {
+    if (config.providers[order[i]]) {
+      config.providers[order[i]].priority = i + 1;
+    }
+  }
+  saveConfig();
+  res.json({ ok: true });
+});
+
+// Toggle provider
+app.post('/api/providers/:id/toggle', (req, res) => {
+  const { id } = req.params;
+  if (!config.providers[id]) return res.status(404).json({ error: 'Provider not found' });
+  config.providers[id].enabled = !config.providers[id].enabled;
+  saveConfig();
+  res.json({ id, enabled: config.providers[id].enabled });
+});
+
+// Toggle all providers
+app.post('/api/providers/toggle-all', (req, res) => {
+  const { enabled } = req.body;
+  if (typeof enabled !== 'boolean') return res.status(400).json({ error: 'Missing enabled boolean' });
+  for (const id of Object.keys(config.providers)) {
+    if (providerMeta[id]) config.providers[id].enabled = enabled;
+  }
+  saveConfig();
+  res.json({ enabled });
+});
+
+// Update provider priority
+app.post('/api/providers/:id/priority', (req, res) => {
+  const { id } = req.params;
+  const { priority } = req.body;
+  if (!config.providers[id]) return res.status(404).json({ error: 'Provider not found' });
+  config.providers[id].priority = priority;
+  saveConfig();
+  res.json({ id, priority });
+});
+
+// Update disabled servers for a provider
+app.post('/api/providers/:id/servers', (req, res) => {
+  const { id } = req.params;
+  const { disabledServers } = req.body;
+  if (!config.providers[id]) return res.status(404).json({ error: 'Provider not found' });
+  config.providers[id].disabledServers = disabledServers || [];
+  saveConfig();
+  res.json({ id, disabledServers: config.providers[id].disabledServers });
+});
+
+// Subtitles endpoint
+app.get('/api/subtitles', async (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  const { tmdbId, type, season, episode } = req.query;
+
+  if (!tmdbId || !type) {
+    return res.status(400).json({ error: 'Missing tmdbId or type' });
+  }
+
+  try {
+    // 1. Get IMDB ID from TMDB
+    const mediaType = type === 'show' || type === 'tv' ? 'tv' : 'movie';
+    const tmdbKey = '439c478a771f35c05022f9feabcca01c';
+    const extUrl = `https://api.themoviedb.org/3/${mediaType}/${tmdbId}/external_ids?api_key=${tmdbKey}`;
+    const extResp = await fetch(extUrl);
+    const extData = await extResp.json();
+    const imdbId = extData?.imdb_id;
+
+    if (!imdbId) {
+      return res.json({ captions: [] });
+    }
+
+    // 2. Query Stremio OpenSubtitles v3 Addon
+    let stremioUrl = `https://opensubtitles-v3.strem.io/subtitles/movie/${imdbId}.json`;
+    if (mediaType === 'tv' && season && episode) {
+      stremioUrl = `https://opensubtitles-v3.strem.io/subtitles/series/${imdbId}:${season}:${episode}.json`;
+    }
+
+    const subResp = await fetch(stremioUrl);
+    if (!subResp.ok) {
+      return res.json({ captions: [] });
+    }
+
+    const subData = await subResp.json();
+    if (!subData || !Array.isArray(subData.subtitles)) {
+      return res.json({ captions: [] });
+    }
+
+    const lang3to2 = {
+      'eng': 'en', 'fre': 'fr', 'fra': 'fr', 'spa': 'es', 'ger': 'de', 'deu': 'de',
+      'ita': 'it', 'por': 'pt', 'rus': 'ru', 'chi': 'zh', 'zho': 'zh', 'jpn': 'ja',
+      'kor': 'ko', 'ara': 'ar', 'hin': 'hi', 'dut': 'nl', 'nld': 'nl', 'pol': 'pl',
+      'tur': 'tr', 'vie': 'vi', 'tha': 'th', 'swe': 'sv', 'nor': 'no', 'dan': 'da',
+      'fin': 'fi', 'gre': 'el', 'ell': 'el', 'heb': 'he', 'ind': 'id', 'msa': 'ms',
+      'may': 'ms', 'rum': 'ro', 'ron': 'ro', 'hun': 'hu', 'cze': 'cs', 'ces': 'cs',
+      'slo': 'sk', 'slk': 'sk', 'ukr': 'uk', 'fil': 'fil', 'ben': 'bn', 'tel': 'te',
+      'tam': 'ta', 'kan': 'kn', 'mal': 'ml', 'mar': 'mr', 'guj': 'gu', 'pan': 'pa',
+      'srp': 'sr', 'hrv': 'hr', 'bul': 'bg', 'slv': 'sl', 'lav': 'lv', 'est': 'et',
+      'lit': 'lt', 'per': 'fa', 'fas': 'fa', 'aze': 'az', 'kat': 'ka', 'sqi': 'sq', 'alb': 'sq'
+    };
+
+    const captions = [];
+
+    for (const item of subData.subtitles) {
+      if (!item.url) continue;
+      
+      const rawLang = (item.lang || 'eng').toLowerCase();
+      const langCode = lang3to2[rawLang] || rawLang.slice(0, 2);
+
+      captions.push({
+        id: item.url,
+        language: langCode,
+        url: item.url,
+        type: 'srt',
+        needsProxy: false,
+        opensubtitles: true,
+      });
+    }
+
+    const uniqueCaptions = [];
+    const seenLangs = new Set();
+    for (const cap of captions) {
+      if (!seenLangs.has(cap.language)) {
+        seenLangs.add(cap.language);
+        uniqueCaptions.push(cap);
+      }
+    }
+
+    return res.json({ captions: uniqueCaptions });
+  } catch (err) {
+    console.error('Error fetching subtitles:', err.message);
+    return res.json({ captions: [] });
+  }
+});
+
+// Search endpoint
+app.get('/api/search', async (req, res) => {
+  let { q: query, type = 'movie', season, episode, provider, tmdbId } = req.query;
+  if (type === 'show') type = 'tv';
+  if (!query) return res.status(400).json({ error: 'Missing query' });
+
+  let enabledProviders = [];
+  if (provider) {
+    const mod = providers[provider];
+    if (mod) {
+      enabledProviders = [[provider, config.providers[provider] || { priority: 999 }]];
+    }
+  } else {
+    enabledProviders = getEnabledProvidersSorted();
+  }
+  const results = [];
+  const errors = [];
+
+  await Promise.allSettled(enabledProviders.map(async ([id, pConfig]) => {
+    try {
+      const mod = providers[id];
+      const streams = await mod.getStreams(tmdbId || query, type, season || null, episode || null, query);
+      if (streams && streams.length > 0) {
+        // Highest quality first so the first stream auto-played is the best one
+        const filtered = sortStreamsByQuality(filterStreams(streams, id));
+        if (filtered.length > 0) {
+          const sliced = filtered.slice(0, config.maxResultsPerProvider || 20);
+          for (const stream of sliced) {
+            if (!stream.type) {
+              if (stream.url.includes('.m3u8')) stream.type = 'm3u8';
+              else if (stream.url.includes('.mpd')) stream.type = 'mpd';
+              else if (stream.url.includes('.ts')) stream.type = 'ts';
+              else if (stream.url.includes('.mp4')) stream.type = 'mp4';
+              else if (stream.url.includes('.mkv')) stream.type = 'mkv';
+              else stream.type = 'mp4';
+            }
+            const storeId = generateStreamId();
+            streamStore.set(storeId, { ts: Date.now(),
+              url: stream.url,
+              headers: stream.headers || {},
+              type: stream.type,
+            });
+            const proxyMode = (config.providers[id] && config.providers[id].proxyMode) || req.query.proxy || '0';
+            if (proxyMode === '0') {
+              stream.proxyUrl = '';
+            } else if (proxyMode === 'vps') {
+              stream.proxyUrl = `/proxy?id=${storeId}`;
+            } else {
+              stream.proxyUrl = buildCfProxyUrl(stream) || `/proxy?id=${storeId}`;
+            }
+          }
+          results.push({
+            provider: id,
+            providerName: providerMeta[id]?.name || id,
+            priority: pConfig.priority,
+            count: filtered.length,
+            servers: extractStreamServers(filtered),
+            streams: sliced,
+          });
+        }
+      }
+    } catch (e) {
+      errors.push({ provider: id, error: e.message });
+    }
+  }));
+
+  results.sort((a, b) => a.priority - b.priority);
+  res.json({ query, type, results, errors, totalStreams: results.reduce((s, r) => s + r.streams.length, 0) });
+});
+
+// Streaming search (SSE) — for real-time test panel
+app.get('/api/search/stream', async (req, res) => {
+  const { q: query, type = 'movie', season, episode } = req.query;
+  if (!query) return res.status(400).json({ error: 'Missing query' });
+
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'Access-Control-Allow-Origin': '*',
+  });
+  res.flushHeaders();
+
+  let cancelled = false;
+  req.on('close', () => { cancelled = true; });
+  res.on('error', () => { cancelled = true; });
+  res.on('close', () => { cancelled = true; });
+  let stuckSince = 0;
+
+  function emit(event, data) {
+    if (cancelled) return;
+    try {
+      const ok = res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+      if (ok === false) {
+        const now = Date.now();
+        if (!stuckSince) stuckSince = now;
+        else if (now - stuckSince > 5000) {
+          cancelled = true;
+          try { res.destroy(); } catch (e) {}
+          return;
+        }
+      } else {
+        stuckSince = 0;
+      }
+    } catch (e) { cancelled = true; try { res.destroy(); } catch (e2) {} }
+  }
+
+  // Flush after every emit to ensure real-time delivery
+  const origWrite = res.write.bind(res);
+  res.write = function(chunk) {
+    const ret = origWrite(chunk);
+    if (typeof res.flush === 'function') res.flush();
+    return ret;
+  };
+
+  const onlyProvider = req.query.provider;
+  let enabledProviders = getEnabledProvidersSorted();
+  if (onlyProvider) {
+    if (providers[onlyProvider]) {
+      enabledProviders = [[onlyProvider, config.providers[onlyProvider] || { priority: 999 }]];
+    } else {
+      emit('start', { total: 0 });
+      emit('provider-error', { provider: onlyProvider, name: onlyProvider, error: 'Scraper not loaded on server (no getStreams export or failed to load)' });
+      emit('done', { results: [], errors: [{ provider: onlyProvider, error: 'Scraper not loaded on server' }], totalStreams: 0 });
+      res.end();
+      return;
+    }
+  }
+  const results = [];
+  const errors = [];
+  const CONCURRENCY = 6;
+
+  emit('start', { total: enabledProviders.length });
+
+  async function processProvider(id, pConfig) {
+    if (cancelled) return;
+    const name = providerMeta[id]?.name || id;
+    emit('provider-start', { provider: id, name });
+    try {
+      const mod = providers[id];
+      const streams = await mod.getStreams(query, type, season || null, episode || null);
+      if (cancelled) return;
+      if (streams && streams.length > 0) {
+        const filtered = filterStreams(streams, id);
+        for (const stream of filtered.slice(0, config.maxResultsPerProvider || 20)) {
+          if (cancelled) return;
+          if (!stream.type) {
+            if (stream.url.includes('.m3u8')) stream.type = 'm3u8';
+            else if (stream.url.includes('.mpd')) stream.type = 'mpd';
+            else if (stream.url.includes('.ts')) stream.type = 'ts';
+            else if (stream.url.includes('.mp4')) stream.type = 'mp4';
+            else if (stream.url.includes('.mkv')) stream.type = 'mkv';
+            else stream.type = 'mp4';
+          }
+          const realUrl = toProxyUrl(stream.url, stream.headers, stream.type);
+          if (realUrl && realUrl !== stream.url) stream.url = realUrl;
+          const proxyUrl = proxyUrlForMode(stream, req, (config.providers[id] && config.providers[id].proxyMode) || req.query.proxy || '0');
+          if (proxyUrl) stream.proxyUrl = proxyUrl;
+          emit('stream', { provider: id, name, quality: stream.quality || 'Auto', url: stream.url, proxyUrl: stream.proxyUrl || '', type: stream.type, title: stream.title || '' });
+        }
+        emit('provider-done', { provider: id, name, count: filtered.length, servers: extractStreamServers(filtered) });
+        results.push({ provider: id, providerName: name, priority: pConfig.priority, count: filtered.length, servers: extractStreamServers(filtered), streams: filtered.slice(0, config.maxResultsPerProvider || 20) });
+      } else {
+        emit('provider-empty', { provider: id, name });
+      }
+    } catch (e) {
+      emit('provider-error', { provider: id, name, error: e.message });
+      errors.push({ provider: id, error: e.message });
+    }
+  }
+
+  // Process providers in parallel batches
+  for (let i = 0; i < enabledProviders.length && !cancelled; i += CONCURRENCY) {
+    const batch = enabledProviders.slice(i, i + CONCURRENCY);
+    await Promise.allSettled(batch.map(([id, pConfig]) => processProvider(id, pConfig)));
+  }
+
+  if (!cancelled) {
+    emit('done', { results, errors, totalStreams: results.reduce((s, r) => s + r.streams.length, 0) });
+  }
+  res.end();
+});
+
+// Get settings
+app.get('/api/settings', (req, res) => {
+  res.json(config);
+});
+
+// Update settings
+app.put('/api/settings', (req, res) => {
+  const { port, tmdbApiKey, globalTimeout, maxResultsPerProvider, proxy, autoplay, introSkip, qualityFilter, streamProxy } = req.body;
+  if (port) config.port = port;
+  if (tmdbApiKey) config.tmdbApiKey = tmdbApiKey;
+  if (globalTimeout) config.globalTimeout = globalTimeout;
+  if (maxResultsPerProvider) config.maxResultsPerProvider = maxResultsPerProvider;
+  if (proxy) config.proxy = { ...config.proxy, ...proxy };
+  if (typeof autoplay === 'boolean') config.autoplay = autoplay;
+  if (typeof introSkip === 'boolean') config.introSkip = introSkip;
+  if (typeof streamProxy === 'boolean') config.streamProxy = streamProxy;
+  if (qualityFilter) config.qualityFilter = qualityFilter;
+  saveNonProviderSettings();
+  res.json(config);
+});
+
+// Intro/credits timestamps via theintrodb.org
+app.get('/api/intro-timestamps', async (req, res) => {
+  const { tmdb_id, type, season, episode, duration_ms } = req.query;
+  if (!tmdb_id) return res.status(400).json({ error: 'tmdb_id required' });
+  try {
+    var apiUrl = 'https://api.theintrodb.org/v3/media?tmdb_id=' + encodeURIComponent(tmdb_id) + '&type=' + encodeURIComponent(type || 'movie');
+    if (season) apiUrl += '&season=' + encodeURIComponent(season);
+    if (episode) apiUrl += '&episode=' + encodeURIComponent(episode);
+    if (duration_ms) apiUrl += '&duration_ms=' + encodeURIComponent(duration_ms);
+    const apiRes = await fetch(apiUrl);
+    if (!apiRes.ok) return res.status(apiRes.status).json({ error: 'introdb fetch failed' });
+    const data = await apiRes.json();
+    res.json(data);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Discover servers for a provider (run a test search)
+app.get('/api/providers/:id/discover', async (req, res) => {
+  const { id } = req.params;
+  const { q = '550', type = 'movie' } = req.query;
+  if (!providers[id]) return res.status(404).json({ error: 'Provider not found' });
+  try {
+    const mod = providers[id];
+    const streams = await mod.getStreams(q, type, null, null);
+    const servers = extractStreamServers(streams || []);
+    res.json({ provider: id, servers, count: (streams || []).length });
+  } catch (e) {
+    res.json({ provider: id, servers: [], count: 0, error: e.message });
+  }
+});
+
+// Scan sub-servers for ALL providers at once (cached 5 min, ?refresh=1 to force)
+let subServerScanCache = { scannedAt: 0, providers: null };
+app.get('/api/providers/servers/all', async (req, res) => {
+  const force = req.query.refresh === '1';
+  const now = Date.now();
+  if (!force && subServerScanCache.providers && now - subServerScanCache.scannedAt < 5 * 60 * 1000) {
+    return res.json({ cached: true, scannedAt: subServerScanCache.scannedAt, providers: subServerScanCache.providers });
+  }
+  const ids = Object.keys(providers);
+  const results = {};
+  const CONC = 5;
+  let idx = 0;
+  async function worker() {
+    while (idx < ids.length) {
+      const id = ids[idx++];
+      try {
+        const mod = providers[id];
+        const streams = await Promise.race([
+          Promise.resolve(mod.getStreams('550', 'movie', null, null)),
+          new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 25000)),
+        ]);
+        results[id] = { servers: extractStreamServers(streams || []), count: (streams || []).length, error: null };
+      } catch (e) {
+        results[id] = { servers: [], count: 0, error: e.message };
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: CONC }, worker));
+  subServerScanCache = { scannedAt: now, providers: results };
+  res.json({ cached: false, scannedAt: now, providers: results });
+});
+
+// ============ Scraper File Management (Isolated Scraper Test) ============
+function sanitizeScraperFileName(name) {
+  const base = path.basename(String(name || ''));
+  if (!base.endsWith('.js') || base.startsWith('.') || base.includes('..')) return null;
+  return base;
+}
+
+// List scraper files in the providers directory
+app.get('/api/scrapers/files', (req, res) => {
+  try {
+    const files = fs.readdirSync(PROVIDERS_DIR)
+      .filter(f => f.endsWith('.js') && !f.startsWith('.'))
+      .map(f => {
+        const st = fs.statSync(path.join(PROVIDERS_DIR, f));
+        return { name: f, size: st.size, mtime: st.mtime };
+      })
+      .sort((a, b) => a.name.localeCompare(b.name));
+    res.json({ files });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Load a scraper file's content
+app.get('/api/scrapers/file', (req, res) => {
+  const name = sanitizeScraperFileName(req.query.name);
+  if (!name) return res.status(400).json({ error: 'Invalid file name' });
+  const filePath = path.join(PROVIDERS_DIR, name);
+  if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'File not found' });
+  try {
+    const content = fs.readFileSync(filePath, 'utf8');
+    res.json({ name, content });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Save a scraper file and hot-reload it
+app.post('/api/scrapers/file', async (req, res) => {
+  const name = sanitizeScraperFileName(req.body && req.body.name);
+  if (!name) return res.status(400).json({ error: 'Invalid file name' });
+  const content = String(req.body.content || '');
+  const filePath = path.join(PROVIDERS_DIR, name);
+  try {
+    const tmpPath = filePath + '.tmp';
+    fs.writeFileSync(tmpPath, content);
+    fs.renameSync(tmpPath, filePath);
+  } catch (e) {
+    return res.status(500).json({ error: 'Failed to write file: ' + e.message });
+  }
+  const id = path.basename(name, '.js');
+  try {
+    delete require.cache[require.resolve(filePath)];
+    const mod = require(filePath);
+    if (mod && typeof mod.getStreams === 'function') {
+      providers[id] = mod;
+      providerMeta[id] = { name: mod.name || id, supportedTypes: mod.supportedTypes || ['movie', 'tv'] };
+      res.json({ success: true, loaded: true, name, id });
+    } else {
+      res.json({ success: true, loaded: false, name, id, error: 'Module has no getStreams export — saved but not loaded' });
+    }
+  } catch (e) {
+    res.json({ success: true, loaded: false, name, id, error: 'Reload failed: ' + e.message });
+  }
+});
+
+// Rename a scraper file, migrate its provider config and hot-reload under the new id
+app.post('/api/scrapers/rename', (req, res) => {
+  const oldName = sanitizeScraperFileName(req.body && req.body.name);
+  const newName = sanitizeScraperFileName(req.body && req.body.newName);
+  if (!oldName || !newName) return res.status(400).json({ error: 'Invalid file name' });
+  if (oldName === newName) return res.status(400).json({ error: 'New name is identical to the current name' });
+
+  const oldPath = path.join(PROVIDERS_DIR, oldName);
+  const newPath = path.join(PROVIDERS_DIR, newName);
+  if (!fs.existsSync(oldPath)) return res.status(404).json({ error: 'File not found: ' + oldName });
+  if (fs.existsSync(newPath)) return res.status(409).json({ error: 'A file named ' + newName + ' already exists' });
+
+  const oldId = oldName.slice(0, -3);
+  const newId = newName.slice(0, -3);
+
+  try {
+    fs.renameSync(oldPath, newPath);
+  } catch (e) {
+    return res.status(500).json({ error: 'Failed to rename file: ' + e.message });
+  }
+
+  // Migrate provider config to the new id, preserving overrides (enabled, priority, name, etc.)
+  if (config.providers[oldId]) {
+    const oldCfg = config.providers[oldId];
+    config.providers[newId] = { ...oldCfg };
+    delete config.providers[oldId];
+  } else if (!config.providers[newId]) {
+    config.providers[newId] = { enabled: true, priority: Object.keys(config.providers).length + 1, disabledServers: [] };
+  }
+  saveConfig();
+
+  // Unload the old module, load the renamed file under its new id
+  try { delete require.cache[require.resolve(oldPath)]; } catch (e) {}
+  delete providers[oldId];
+  delete providerMeta[oldId];
+
+  let loaded = false;
+  let loadError = null;
+  try {
+    delete require.cache[require.resolve(newPath)];
+    const mod = require(newPath);
+    if (mod && typeof mod.getStreams === 'function') {
+      providers[newId] = mod;
+      providerMeta[newId] = {
+        name: mod.name || newId,
+        supportedTypes: mod.supportedTypes || ['movie', 'tv'],
+      };
+      loaded = true;
+    } else {
+      loadError = 'Module has no getStreams export — renamed but not loaded';
+    }
+  } catch (e) {
+    loadError = 'Reload failed: ' + e.message;
+  }
+
+  res.json({ success: true, name: newName, id: newId, previousId: oldId, loaded, error: loadError });
+});
+
+// ============ Git Backup & Restore (one-click) ============
+const GIT_DIR = path.join(__dirname, '..');
+
+function git(args) {
+  return new Promise((resolve, reject) => {
+    execFile('git', ['-C', GIT_DIR, ...args], { maxBuffer: 10 * 1024 * 1024, timeout: 60000 }, (err, stdout, stderr) => {
+      if (err) reject(new Error((stderr || '').trim() || err.message));
+      else resolve(stdout);
+    });
+  });
+}
+
+async function gitSafeCommit(message) {
+  const status = (await git(['status', '--porcelain'])).trim();
+  if (!status) return null;
+  await git(['add', '-A']);
+  await git(['commit', '-m', message]);
+  return (await git(['rev-parse', 'HEAD'])).trim();
+}
+
+function hotReloadProviderFile(relPath) {
+  const base = path.basename(relPath);
+  if (!relPath.startsWith('deobfuscated/') || !base.endsWith('.js')) return null;
+  const id = base.slice(0, -3);
+  try {
+    const filePath = path.join(PROVIDERS_DIR, base);
+    delete require.cache[require.resolve(filePath)];
+    const mod = require(filePath);
+    if (mod && typeof mod.getStreams === 'function') {
+      providers[id] = mod;
+      providerMeta[id] = { name: mod.name || id, supportedTypes: mod.supportedTypes || ['movie', 'tv'] };
+      return { id, loaded: true };
+    }
+    return { id, loaded: false };
+  } catch (e) {
+    return { id, loaded: false, error: e.message };
+  }
+}
+
+// Backup status: repo health, last commit, changed files
+app.get('/api/git/status', async (req, res) => {
+  try {
+    const branch = (await git(['rev-parse', '--abbrev-ref', 'HEAD'])).trim();
+    const lastCommit = {
+      hash: (await git(['rev-parse', 'HEAD'])).trim(),
+      short: (await git(['rev-parse', '--short', 'HEAD'])).trim(),
+      date: (await git(['show', '-s', '--format=%ci', 'HEAD'])).trim(),
+      message: (await git(['show', '-s', '--format=%s', 'HEAD'])).trim(),
+      author: (await git(['show', '-s', '--format=%an', 'HEAD'])).trim(),
+    };
+    const statusOut = await git(['status', '--porcelain']);
+    const changed = statusOut.split('\n').filter(Boolean).map(l => ({
+      status: l.slice(0, 2).trim(),
+      path: l.slice(3),
+    }));
+    let unpushed = false;
+    try {
+      const local = (await git(['rev-parse', 'HEAD'])).trim();
+      const remote = (await git(['rev-parse', '@{u}'])).trim();
+      unpushed = local !== remote;
+    } catch (e) {}
+    res.json({ repo: true, branch, lastCommit, clean: changed.length === 0, changed, unpushed });
+  } catch (e) {
+    res.json({ repo: false, error: e.message });
+  }
+});
+
+// Recent commit history (for rollback)
+app.get('/api/git/log', async (req, res) => {
+  try {
+    const out = await git(['log', '-30', "--pretty=format:%h%x1f%ci%x1f%an%x1f%s"]);
+    const commits = out.split('\n').filter(Boolean).map(line => {
+      const [short, date, author, ...rest] = line.split('\x1f');
+      return { short, date, author, message: rest.join('\x1f') };
+    });
+    res.json({ commits });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// One-click backup: commit all changes and push to GitHub
+app.post('/api/git/commit', async (req, res) => {
+  try {
+    const msg = String((req.body && req.body.message) || 'backup: manual commit from providers panel').slice(0, 200);
+    const hash = await gitSafeCommit(msg);
+    if (!hash) return res.json({ ok: true, committed: false, message: 'Nothing to commit — working tree clean' });
+    try { await git(['push', 'origin', 'HEAD']); } catch (e) {}
+    res.json({ ok: true, committed: true, hash });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Restore: one file from the last backup, or full rollback to a commit
+app.post('/api/git/restore', async (req, res) => {
+  const { commit, file } = req.body || {};
+  try {
+    if (file) {
+      const rel = String(file);
+      const full = path.join(GIT_DIR, rel);
+      if (!full.startsWith(GIT_DIR + path.sep) || rel.includes('..')) {
+        return res.status(400).json({ error: 'Invalid path' });
+      }
+      await git(['checkout', 'HEAD', '--', rel]);
+      const reload = hotReloadProviderFile(rel);
+      return res.json({ ok: true, file: rel, restored: true, reload });
+    }
+    if (commit) {
+      const ref = String(commit);
+      if (!/^[0-9a-f]{4,40}$/.test(ref)) return res.status(400).json({ error: 'Invalid commit' });
+      await git(['cat-file', '-e', ref + '^{commit}']);
+      await gitSafeCommit('auto-backup before restore');
+      await git(['reset', '--hard', ref]);
+      setTimeout(() => {
+        try {
+          execFile('pm2', ['restart', 'scraper-hub'], { detached: true, stdio: 'ignore' }).unref();
+        } catch (e) {}
+      }, 1500);
+      return res.json({ ok: true, restored: ref, restarting: true });
+    }
+    res.status(400).json({ error: 'Provide a commit or file' });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Get server IP / connection info
+app.get('/api/info', (req, res) => {
+  const os = require('os');
+  const interfaces = os.networkInterfaces();
+  const ips = [];
+  for (const name of Object.keys(interfaces)) {
+    for (const iface of interfaces[name]) {
+      if (iface.family === 'IPv4' && !iface.internal) ips.push(iface.address);
+    }
+  }
+  res.json({
+    hostname: os.hostname(),
+    ips,
+    port: config.port,
+    platform: os.platform(),
+    serverUrl: `http://${ips[0] || 'localhost'}:${config.port}`,
+  });
+});
+
+// ============ Stream Proxy ============
+
+function encodeB64url(str) {
+  return Buffer.from(str).toString('base64url');
+}
+
+function decodeB64url(str) {
+  return Buffer.from(str, 'base64url').toString();
+}
+
+function rewriteHlsPlaylist(playlist, baseUrl, headers, host) {
+  const headerB64 = encodeB64url(JSON.stringify(headers));
+  const prefix = host ? `https://${host}` : '';
+
+  // Reorder master playlist variants by bandwidth descending so highest quality plays first
+  const lines = playlist.split('\n');
+  if (playlist.includes('#EXT-X-STREAM-INF:')) {
+    const variants = [];
+    const otherLines = [];
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].startsWith('#EXT-X-STREAM-INF:')) {
+        const urlLine = i + 1 < lines.length ? lines[i + 1] : '';
+        const bwMatch = lines[i].match(/BANDWIDTH=(\d+)/i);
+        variants.push({ bandwidth: bwMatch ? parseInt(bwMatch[1]) : 0, header: lines[i], url: urlLine });
+        i++;
+      } else {
+        otherLines.push(lines[i]);
+      }
+    }
+    if (variants.length > 1) {
+      variants.sort((a, b) => b.bandwidth - a.bandwidth);
+      const reordered = [...otherLines];
+      // Insert sorted variants at the position of the first variant
+      const insertAt = otherLines.length;
+      for (const v of variants) {
+        reordered.push(v.header);
+        reordered.push(v.url);
+      }
+      playlist = reordered.join('\n');
+    }
+  }
+
+  // Rewrite non-comment lines and URI tags to proxy URLs
+  return playlist.split('\n').map(line => {
+    let rewrittenLine = line;
+    
+    // Rewrite URI attributes (e.g. inside EXT-X-MEDIA or EXT-X-KEY tags)
+    const uriAttrRe = /URI="([^"]+)"/gi;
+    rewrittenLine = rewrittenLine.replace(uriAttrRe, (match, url) => {
+      try {
+        const absoluteUrl = new URL(url, baseUrl).href;
+        const urlB64 = encodeB64url(absoluteUrl);
+        return `URI="${prefix}/proxy?u=${urlB64}&h=${headerB64}"`;
+      } catch {
+        return match;
+      }
+    });
+
+    const trimmed = rewrittenLine.trim();
+    if (!trimmed || trimmed.startsWith('#')) return rewrittenLine;
+    try {
+      const absoluteUrl = new URL(trimmed, baseUrl).href;
+      const urlB64 = encodeB64url(absoluteUrl);
+      return `${prefix}/proxy?u=${urlB64}&h=${headerB64}`;
+    } catch {
+      return rewrittenLine;
+    }
+  }).join('\n');
+}
+
+function bodyStreamFromReader(reader, firstChunk) {
+  let first = true;
+  return new Readable({
+    read() {
+      if (first) { first = false; this.push(firstChunk); return; }
+      reader.read().then(({ done, value }) => {
+        if (done) { this.push(null); return; }
+        this.push(value);
+      });
+    }
+  });
+}
+
+// Stream already-peeked chunks first, then keep reading from the reader — avoids buffering the whole body
+function streamWithPeek(peekChunks, reader) {
+  const { PassThrough } = require('stream');
+  const pt = new PassThrough();
+  (async () => {
+    try {
+      for (const c of peekChunks) {
+        if (pt.destroyed) { try { await reader.cancel(); } catch {} return; }
+        pt.write(c);
+      }
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (pt.destroyed) { try { await reader.cancel(); } catch {} return; }
+        pt.write(value);
+      }
+      pt.end();
+    } catch (e) {
+      pt.destroy(e);
+    }
+  })();
+  return pt;
+}
+
+// Proxy endpoint - supports both ID-based lookup and inline URL+headers
+app.options('/proxy', (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'X-Cookie, X-Referer, X-Origin, X-User-Agent, X-Token, Range');
+  res.setHeader('Access-Control-Expose-Headers', 'Content-Length, Content-Range, Accept-Ranges, X-Final-Destination, X-Set-Cookie');
+  res.status(204).end();
+});
+
+app.get('/proxy', async (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Expose-Headers', 'Content-Length, Content-Range, Accept-Ranges');
+
+  const { id, u, h, destination } = req.query;
+
+  let targetUrl, targetHeaders, targetType;
+
+  if (id && streamStore.has(id)) {
+    const entry = streamStore.get(id);
+    targetUrl = entry.url;
+    targetHeaders = entry.headers;
+    targetType = entry.type;
+  } else if (u) {
+    targetUrl = decodeB64url(u);
+    targetHeaders = h ? JSON.parse(decodeB64url(h)) : {};
+  } else if (destination) {
+    targetUrl = destination;
+    targetHeaders = {};
+    // Forward all original request headers (except hop-by-hop and connection-specific ones)
+    const skipHeaders = new Set(['host', 'connection', 'content-length', 'transfer-encoding', 'keep-alive', 'upgrade', 'proxy-connection', 'x-token']);
+    // First, copy all original headers
+    for (const [key, value] of Object.entries(req.headers)) {
+      if (!skipHeaders.has(key.toLowerCase()) && typeof value === 'string') {
+        targetHeaders[key] = value;
+      }
+    }
+    // Then override with provider-specific mapped headers (for @movie-web/providers compatibility)
+    if (req.headers['x-cookie']) targetHeaders['Cookie'] = req.headers['x-cookie'];
+    if (req.headers['x-referer']) targetHeaders['Referer'] = req.headers['x-referer'];
+    if (req.headers['x-origin']) targetHeaders['Origin'] = req.headers['x-origin'];
+    if (req.headers['x-user-agent']) targetHeaders['User-Agent'] = req.headers['x-user-agent'];
+  } else {
+    return res.status(400).send('Missing id or url parameter');
+  }
+
+  const fetchHeaders = { ...targetHeaders };
+  if (req.headers.range) {
+    fetchHeaders.Range = req.headers.range;
+  }
+  if (!fetchHeaders['User-Agent'] && !fetchHeaders['user-agent']) {
+    fetchHeaders['User-Agent'] = req.headers['user-agent'] || 'Mozilla/5.0';
+  }
+
+  try {
+    const agent = createProxyAgent(targetUrl);
+    const opts = { headers: fetchHeaders };
+    if (agent) opts.agent = agent;
+
+    const response = await fetch(targetUrl, opts);
+
+    if (!response.ok && response.status !== 206) {
+      return res.status(response.status).send(`Provider returned ${response.status}`);
+    }
+
+    const forwardHeaders = ['content-type', 'content-length', 'content-range', 'accept-ranges'];
+    for (const [key, value] of response.headers) {
+      if (forwardHeaders.includes(key.toLowerCase())) {
+        res.setHeader(key, value);
+      }
+    }
+    if (destination) res.setHeader('X-Final-Destination', response.url || targetUrl);
+    res.status(response.status);
+
+    const contentType = response.headers.get('content-type') || '';
+
+    // Detect HLS by peeking at first bytes of body
+    const reader = response.body.getReader();
+    const first = await reader.read();
+    if (first.done) { res.end(); return; }
+
+    const firstHead = Buffer.from(first.value).toString('utf8', 0, Math.min(first.value.length, 30));
+
+    if (firstHead.startsWith('#EXTM3U') && targetUrl) {
+      const allChunks = [first.value];
+      let totalBytes = first.value.length;
+      while (totalBytes < 5242880) { // cap playlist buffering at 5MB
+        const { done, value } = await reader.read();
+        if (done) break;
+        allChunks.push(value);
+        totalBytes += value.length;
+      }
+      if (totalBytes >= 5242880) {
+        const nodeStream = bodyStreamFromReader(reader, first.value);
+        req.on('close', () => nodeStream.destroy());
+        res.setHeader('Content-Type', contentType || 'application/vnd.apple.mpegurl');
+        nodeStream.pipe(res);
+        return;
+      }
+      const bodyText = Buffer.concat(allChunks).toString('utf8');
+      try {
+        const baseUrl = new URL(targetUrl);
+        const rewritten = rewriteHlsPlaylist(bodyText, baseUrl, targetHeaders, req.headers.host);
+        res.setHeader('Content-Type', contentType || 'application/vnd.apple.mpegurl');
+        res.setHeader('Content-Length', Buffer.byteLength(rewritten));
+        res.end(rewritten);
+      } catch (e) {
+        console.error('HLS rewrite error:', e.message);
+        res.setHeader('Content-Type', contentType);
+        res.setHeader('Content-Length', Buffer.byteLength(bodyText));
+        res.end(bodyText);
+      }
+    } else {
+      // Stream the response through — only block if non-video content (for media streaming contexts)
+      const ct = contentType.toLowerCase();
+      if (ct.includes('json')) {
+        // JSON content should always pass through (needed for CORS proxy use cases)
+        const allChunks = [first.value];
+        let totalBytes = first.value.length;
+        while (totalBytes < 5242880) { // cap JSON buffering at 5MB
+          const { done, value } = await reader.read();
+          if (done) break;
+          allChunks.push(value);
+          totalBytes += value.length;
+        }
+        const body = Buffer.concat(allChunks);
+        res.setHeader('Content-Type', ct);
+        res.setHeader('Content-Length', body.length);
+        res.end(body);
+        return;
+      }
+      if (ct.includes('html')) {
+        // Peek at the start of the body to classify it without buffering the whole file
+        const peekChunks = [first.value];
+        let peekedBytes = first.value.length;
+        while (peekedBytes < 65536) { // peek up to 64KB
+          const { done, value } = await reader.read();
+          if (done) break;
+          peekChunks.push(value);
+          peekedBytes += value.length;
+        }
+        const peek = Buffer.concat(peekChunks);
+        // Check for mislabeled video (CDNs serve TS/MP4 with text/html Content-Type)
+        const isMpegTs = peek.length > 0 && peek[0] === 0x47;
+        const isMp4 = peek.slice(4, 8).toString() === 'ftyp' || peek.slice(0, 4).toString() === 'ftyp';
+        const isWebm = peek.slice(0, 4).toString() === '\x1a\x45\xdf\xa3';
+        if (isMpegTs || isMp4 || isWebm) {
+          const mime = isMpegTs ? 'video/mp2t' : isMp4 ? 'video/mp4' : 'video/webm';
+          res.setHeader('Content-Type', mime);
+          const nodeStream = streamWithPeek(peekChunks, reader);
+          req.on('close', () => nodeStream.destroy());
+          nodeStream.pipe(res);
+          return;
+        }
+        // Check if it's actual HTML page content (not mislabeled binary)
+        const textStart = peek.toString('utf8', 0, Math.min(peek.length, 100)).trim();
+        if (textStart.startsWith('<!') || textStart.startsWith('<html') || textStart.startsWith('<?xml')) {
+          const preview = peek.toString('utf8', 0, Math.min(peek.length, 300));
+          console.error(`Proxy: non-video content "${ct}" for ${targetUrl}: ${preview}`);
+          if (!res.headersSent) res.status(502).send(`Bad content type: ${ct}`);
+          return;
+        }
+        // Not actual HTML — likely mislabeled binary, pass through
+        res.setHeader('Content-Type', ct);
+        const nodeStream = streamWithPeek(peekChunks, reader);
+        req.on('close', () => nodeStream.destroy());
+        nodeStream.pipe(res);
+        return;
+      }
+    // Pass through all other content types (video, image, octet-stream, etc.)
+    const nodeStream = bodyStreamFromReader(reader, first.value);
+    req.on('close', () => nodeStream.destroy());
+    nodeStream.pipe(res);
+    }
+  } catch (e) {
+    console.error('Proxy error:', e.message);
+    if (!res.headersSent) {
+      if (e.code === 'ENOTFOUND' || e.code === 'ECONNREFUSED') {
+        res.status(502).send('Provider unreachable');
+      } else if (e.name === 'AbortError') {
+        res.status(504).send('Proxy timeout');
+      } else {
+        res.status(502).send('Proxy error');
+      }
+    }
+  }
+});
+
+// Resolve a known catalogue variant (language-dubbed stream)
+app.get('/api/resolve-variant', async (req, res) => {
+  let { provider: providerId, id, type = 'movie', season, episode } = req.query;
+  if (type === 'show') type = 'tv';
+  if (!providerId || !id) return res.status(400).json({ error: 'Missing provider or id' });
+
+  const mod = providers[providerId];
+  if (!mod || typeof mod.resolveVariant !== 'function') {
+    return res.status(400).json({ error: 'Provider does not support variant resolution' });
+  }
+
+  try {
+    const result = await mod.resolveVariant(id, type, season || null, episode || null);
+    if (!result) return res.status(404).json({ error: 'No stream found for variant' });
+
+    if (!result.type) {
+      if (result.url.includes('.m3u8')) result.type = 'm3u8';
+      else if (result.url.includes('.mpd')) result.type = 'mpd';
+      else if (result.url.includes('.ts')) result.type = 'ts';
+      else if (result.url.includes('.mp4')) result.type = 'mp4';
+      else if (result.url.includes('.mkv')) result.type = 'mkv';
+      else result.type = 'mp4';
+    }
+
+    const storeId = generateStreamId();
+    streamStore.set(storeId, {
+      ts: Date.now(),
+      url: result.url,
+      headers: result.headers || {},
+      type: result.type,
+    });
+    result.proxyUrl = `/proxy?id=${storeId}`;
+
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/variants/zh', async (req, res) => {
+  let { tmdbId, type = 'movie', title } = req.query;
+  if (!tmdbId) return res.status(400).json({ error: 'Missing tmdbId' });
+
+  const mod = providers['iyf'];
+  if (!mod || typeof mod.resolveVariant !== 'function') {
+    return res.status(400).json({ error: 'iyf.tv provider not loaded' });
+  }
+
+  try {
+    const result = await mod.resolveVariant(tmdbId, type, null, null);
+    if (!result) return res.json({ variants: [] });
+
+    const storeId = generateStreamId();
+    streamStore.set(storeId, {
+      ts: Date.now(),
+      url: result.url,
+      headers: result.headers || {},
+      type: result.type || 'm3u8',
+    });
+
+    res.json({
+      variants: [{
+        language: 'chinese',
+        label: 'Chinese',
+        id: tmdbId,
+        proxyUrl: `/proxy?id=${storeId}`,
+      }],
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Language variant endpoints for scrapers not exposed via search
+app.get('/api/variants/fss', async (req, res) => {
+  let { tmdbId, type = 'movie', title } = req.query;
+  if (!tmdbId || !title) return res.status(400).json({ error: 'Missing tmdbId or title' });
+
+  const mod = providers['fss'];
+  if (!mod || typeof mod.resolveVariant !== 'function') {
+    return res.status(400).json({ error: 'FSS provider not loaded' });
+  }
+
+  const langKeys = ['default', 'vff', 'vfq', 'vostfr'];
+  const langLabels = { default: 'French 1', vff: 'French 2', vfq: 'French 3', vostfr: 'French 4' };
+
+  try {
+    const variants = [];
+    for (const langKey of langKeys) {
+      const result = await mod.resolveVariant(`${tmdbId}:${langKey}`, type, null, null);
+      if (result) {
+        const storeId = generateStreamId();
+        streamStore.set(storeId, {
+          ts: Date.now(),
+          url: result.url,
+          headers: result.headers || {},
+          type: result.type || 'm3u8',
+        });
+        variants.push({
+          language: 'french',
+          label: langLabels[langKey] || langKey,
+          id: `${tmdbId}:${langKey}`,
+          proxyUrl: `/proxy?id=${storeId}`,
+        });
+      }
+    }
+    res.json({ variants });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/variants/de', async (req, res) => {
+  let { tmdbId, type = 'movie', title } = req.query;
+  if (!tmdbId) return res.status(400).json({ error: 'Missing tmdbId' });
+
+  const mod = providers['streamkiste'];
+  if (!mod || typeof mod.resolveVariant !== 'function') {
+    return res.status(400).json({ error: 'StreamKiste provider not loaded' });
+  }
+
+  try {
+    const result = await mod.resolveVariant(tmdbId, type, null, null);
+    if (!result) return res.json({ variants: [] });
+
+    const storeId = generateStreamId();
+    streamStore.set(storeId, {
+      ts: Date.now(),
+      url: result.url,
+      headers: result.headers || {},
+      type: result.type || 'mp4',
+    });
+
+    res.json({
+      variants: [{
+        language: 'german',
+        label: 'German',
+        id: tmdbId,
+        proxyUrl: `/proxy?id=${storeId}`,
+      }],
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ============ Analytics Routes ============
+
+app.post('/api/analytics/event', analytics.handleEvent);
+app.get('/api/analytics/stats', analytics.handleStats);
+app.get('/api/analytics/events', analytics.handleEventsList);
+app.get('/api/analytics/realtime', analytics.handleRealtime);
+
+// Documentation page
+app.get('/docs', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'docs.html'));
+});
+
+// SPA fallback - serve index.html for non-matching routes
+app.use((req, res, next) => {
+  if (req.path.startsWith('/api/') || req.path.startsWith('/proxy') || req.path.startsWith('/docs') || req.path.startsWith('/css/') || req.path.startsWith('/js/') || req.path.startsWith('/metadata') || req.path.startsWith('/scrape')) return next();
+  res.sendFile(path.join(__dirname, 'public', 'index.html'), err => { if (err) next(); });
+});
+
+async function start() {
+  await loadProviders();
+  initProviderConfig();
+  analytics.init();
+  const port = PORT || config.port;
+  console.log(`Loaded ${Object.keys(providers).length} providers`);
+
+  const server = http.createServer(app);
+
+  // A client that disconnects mid-response leaves the socket in CLOSE_WAIT;
+  // Node/libuv then retries the same failed writev in a tight loop, pinning a
+  // CPU core. Destroying the socket as soon as the peer closes its side aborts
+  // any queued response write instead of spinning. A generous idle backstop
+  // also reaps dead connections that never emit 'end'.
+  server.timeout = 300000;
+  server.on('connection', (socket) => {
+    socket.on('end', () => {
+      try { socket.destroy(); } catch (e) {}
+    });
+    socket.on('error', () => {
+      try { socket.destroy(); } catch (e) {}
+    });
+  });
+
+  // Destroy stuck/idle sockets. A client that disconnects mid-response leaves
+  // the socket in CLOSE_WAIT and Node/libuv retries the same failed writev in a
+  // tight loop, pinning a CPU core. Enabling the socket timeout makes the server
+  // destroy such connections instead of spinning forever.
+  server.timeout = 30000;
+  server.requestTimeout = 30000;
+  server.headersTimeout = 30000;
+  server.on('connection', (socket) => {
+    socket.on('end', () => {
+      // Peer closed its side (CLOSE_WAIT). Tear down promptly so a queued
+      // response write is aborted rather than retried.
+      try { socket.destroy(); } catch (e) {}
+    });
+    socket.on('error', () => {
+      try { socket.destroy(); } catch (e) {}
+    });
+  });
+
+  const wss = new WebSocketServer({ server, path: '/ws' });
+  setupWebSocket(wss);
+  console.log('  WebSocket: /ws');
+
+  server.listen(port, '0.0.0.0', () => {
+    console.log(`Server running on http://0.0.0.0:${port}`);
+    console.log(`  Proxy: /proxy  |  Docs: /docs`);
+    const os = require('os');
+    const nets = os.networkInterfaces();
+    for (const name of Object.keys(nets)) {
+      for (const net of nets[name]) {
+        if (net.family === 'IPv4' && !net.internal) {
+          console.log(`  Network: http://${net.address}:${port}`);
+        }
+      }
+    }
+  });
+}
+
+start().catch(console.error);

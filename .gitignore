@@ -1,0 +1,5 @@
+node_modules/
+server/analytics.json
+server/providers.json
+server/teerth-data.json
+*.bak*

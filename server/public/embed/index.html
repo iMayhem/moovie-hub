@@ -1,0 +1,856 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>peestream - Ultimate Embed Player</title>
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&display=swap" rel="stylesheet">
+
+  <!-- Icons -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+  <!-- OpenPanel Analytics -->
+  <script>
+    window.op = window.op || function(...args) {
+      (window.op.q = window.op.q || []).push(args);
+    };
+    window.op('init', {
+      clientId: 'be0fa489-1813-4fbf-939a-858f1b842b61',
+      trackScreenViews: true,
+      trackOutgoingLinks: true,
+      trackAttributes: true,
+    });
+  </script>
+  <script src="https://openpanel.dev/op1.js" async defer></script>
+
+  <!-- Popup Ad (isolated iframe so its overlays/capture events never cover the player controls) -->
+  <iframe id="ad-sandbox" aria-hidden="true" tabindex="-1" style="position:absolute;width:0;height:0;border:0;left:-9999px;top:-9999px;visibility:hidden" sandbox="allow-scripts allow-popups allow-same-origin allow-popups-to-escape-sandbox"></iframe>
+  <script data-cfasync="false">
+    (function () {
+      try {
+        var f = document.getElementById('ad-sandbox');
+        var doc = f.contentDocument || f.contentWindow.document;
+        var s = doc.createElement('script');
+        s.setAttribute('data-cfasync', 'false');
+        s.src = '//dc9xwpjprguup.cloudfront.net/?pwxcd=1454678';
+        doc.head.appendChild(s);
+      } catch (e) {}
+
+      document.addEventListener('click', function (e) {
+        try {
+          var f = document.getElementById('ad-sandbox');
+          var doc = f.contentDocument || f.contentWindow.document;
+          var ev = doc.createEvent('MouseEvents');
+          ev.initMouseEvent('click', true, true, f.contentWindow, e.detail,
+            e.screenX, e.screenY, e.clientX, e.clientY, e.ctrlKey, e.altKey,
+            e.shiftKey, e.metaKey, e.button, e.relatedTarget);
+          doc.dispatchEvent(ev);
+        } catch (err) {}
+      }, true);
+    })();
+  </script>
+
+  <style>
+    :root {
+      --bg-color: #07070a;
+      --card-bg: #0f0f1b;
+      --accent-color: #a359ec;
+      --accent-hover: #bd84f7;
+      --text-color: #ffffff;
+      --text-dim: #8e8e9f;
+      --border-color: rgba(255, 255, 255, 0.05);
+      --ring-bezel: 0 0 0 1px rgba(255, 255, 255, 0.05);
+      --shadow-glow: 0 0 25px rgba(163, 89, 236, 0.25);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body, html {
+      width: 100%;
+      height: 100%;
+      background-color: #000000;
+      font-family: 'DM Sans', sans-serif;
+      color: var(--text-color);
+      scroll-behavior: smooth;
+      overflow: hidden;
+    }
+
+    ::-webkit-scrollbar {
+      width: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: var(--bg-color);
+    }
+    ::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, 0.06);
+      border-radius: 3px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: var(--accent-color);
+    }
+
+    #app {
+      width: 100%;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ----------------------------------
+       LANDING PAGE STYLES (NO TMDB ID)
+       ---------------------------------- */
+    .landing-view {
+      width: 100%;
+      height: 100%;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding-bottom: 80px;
+      background-color: var(--bg-color);
+    }
+
+    .nav-header {
+      width: 100%;
+      max-width: 1200px;
+      padding: 24px 20px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .brand-logo {
+      font-size: 1.5rem;
+      font-weight: 800;
+      color: #ffffff;
+      text-decoration: none;
+      user-select: none;
+      letter-spacing: -0.5px;
+    }
+
+    .brand-logo span {
+      color: var(--accent-color);
+    }
+
+    .nav-links {
+      display: flex;
+      gap: 25px;
+    }
+
+    .nav-link-item {
+      color: var(--text-dim);
+      text-decoration: none;
+      font-size: 0.9rem;
+      font-weight: 500;
+      transition: color 0.2s ease;
+    }
+
+    .nav-link-item:hover {
+      color: #ffffff;
+    }
+
+    .hero-container {
+      width: 100%;
+      max-width: 1200px;
+      padding: 85px 20px 60px 20px;
+      text-align: center;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    .hero-title {
+      font-size: 3.2rem;
+      font-weight: 800;
+      line-height: 1.15;
+      margin-bottom: 22px;
+      max-width: 700px;
+      letter-spacing: -1.5px;
+    }
+
+    .hero-title .logo-stream {
+      color: var(--accent-color);
+    }
+
+    .hero-subtitle {
+      font-size: 1rem;
+      color: var(--text-dim);
+      margin-bottom: 45px;
+      max-width: 600px;
+      line-height: 1.6;
+    }
+
+    .generator-box {
+      width: 100%;
+      max-width: 580px;
+      background: var(--card-bg);
+      border: 1px solid var(--border-color);
+      border-radius: 24px;
+      padding: 30px;
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4);
+      margin-bottom: 40px;
+    }
+
+    .tab-switcher {
+      display: flex;
+      background: rgba(255, 255, 255, 0.02);
+      padding: 4px;
+      border-radius: 14px;
+      margin-bottom: 24px;
+      border: 1px solid rgba(255, 255, 255, 0.03);
+    }
+
+    .tab-btn {
+      flex: 1;
+      background: none;
+      border: none;
+      color: var(--text-dim);
+      font-family: 'DM Sans', sans-serif;
+      font-size: 0.85rem;
+      font-weight: 700;
+      padding: 11px 0;
+      border-radius: 10px;
+      cursor: pointer;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      transition: all 0.2s ease;
+    }
+
+    .tab-btn.active {
+      background: rgba(255, 255, 255, 0.05);
+      color: #ffffff;
+    }
+
+    .input-row {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+
+    .gen-input {
+      background: rgba(255, 255, 255, 0.02);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      color: #ffffff;
+      font-family: 'DM Sans', sans-serif;
+      font-size: 0.95rem;
+      outline: none;
+      padding: 14px 18px;
+      transition: all 0.2s ease;
+    }
+
+    .gen-input:focus {
+      border-color: rgba(163, 89, 236, 0.5);
+      box-shadow: 0 0 10px rgba(163, 89, 236, 0.1);
+    }
+
+    .gen-input.flex-main {
+      flex: 1;
+    }
+
+    .gen-input.width-small {
+      width: 80px;
+      text-align: center;
+    }
+
+    .play-btn {
+      width: 100%;
+      padding: 15px 20px;
+      background: var(--accent-color);
+      color: #ffffff;
+      border: none;
+      border-radius: 14px;
+      font-family: 'DM Sans', sans-serif;
+      font-size: 0.95rem;
+      font-weight: 700;
+      cursor: pointer;
+      box-shadow: var(--shadow-glow);
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .play-btn:hover {
+      background: var(--accent-hover);
+      transform: translateY(-1px);
+      box-shadow: 0 0 30px rgba(163, 89, 236, 0.35);
+    }
+
+    .play-btn:active {
+      transform: translateY(1px);
+    }
+
+    .preview-container {
+      width: 100%;
+      max-width: 800px;
+      aspect-ratio: 16 / 9;
+      background: var(--card-bg);
+      border: 1px solid var(--border-color);
+      border-radius: 24px;
+      margin-top: 30px;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      position: relative;
+      overflow: hidden;
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4);
+    }
+
+    .preview-iframe {
+      width: 100%;
+      height: 100%;
+      border: none;
+      display: none;
+    }
+
+    .preview-placeholder {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 15px;
+      color: var(--text-dim);
+      font-size: 0.95rem;
+      text-align: center;
+      padding: 20px;
+    }
+
+    .preview-placeholder i {
+      font-size: 2.8rem;
+      color: var(--accent-color);
+      opacity: 0.85;
+    }
+
+    .preview-btn {
+      background: rgba(255, 255, 255, 0.03) !important;
+      border: 1px solid var(--border-color) !important;
+      box-shadow: none !important;
+    }
+
+    .preview-btn:hover {
+      background: rgba(255, 255, 255, 0.08) !important;
+      border-color: rgba(255, 255, 255, 0.15) !important;
+      color: #ffffff !important;
+      transform: translateY(-1px);
+      box-shadow: none !important;
+    }
+
+    .section-container {
+      width: 100%;
+      max-width: 1000px;
+      padding: 0 20px;
+      margin-bottom: 80px;
+      text-align: left;
+    }
+
+    .section-title {
+      font-size: 1.8rem;
+      font-weight: 800;
+      margin-bottom: 8px;
+      letter-spacing: -0.5px;
+    }
+
+    .section-desc {
+      font-size: 0.95rem;
+      color: var(--text-dim);
+      margin-bottom: 25px;
+    }
+
+    .server-list-card {
+      width: 100%;
+      background: var(--card-bg);
+      border: 1px solid var(--border-color);
+      border-radius: 20px;
+      overflow: hidden;
+    }
+
+    .server-item {
+      display: flex;
+      align-items: center;
+      padding: 20px 24px;
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    .server-item:last-child {
+      border-bottom: none;
+    }
+
+    .server-index {
+      font-size: 1.1rem;
+      font-weight: 800;
+      color: var(--accent-color);
+      width: 40px;
+    }
+
+    .server-info {
+      flex: 1;
+    }
+
+    .server-name {
+      font-size: 0.95rem;
+      font-weight: 700;
+      text-transform: capitalize;
+      margin-bottom: 4px;
+    }
+
+    .server-blurb {
+      font-size: 0.8rem;
+      color: var(--text-dim);
+    }
+
+    .server-badge {
+      padding: 4px 10px;
+      border-radius: 6px;
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--text-dim);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+    }
+
+    .server-badge.high {
+      background: rgba(0, 230, 118, 0.08);
+      color: #00e676;
+      border-color: rgba(0, 230, 118, 0.15);
+    }
+
+    .server-rename-btn {
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid var(--border-color);
+      color: var(--text-dim);
+      width: 34px;
+      height: 34px;
+      border-radius: 9px;
+      cursor: pointer;
+      font-size: 0.8rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-left: 12px;
+      transition: all 0.2s ease;
+    }
+
+    .server-rename-btn:hover {
+      background: var(--accent-color);
+      color: #ffffff;
+      border-color: var(--accent-color);
+    }
+
+    .server-name-row {
+      display: flex;
+      align-items: center;
+    }
+
+    .server-item.off {
+      opacity: 0.45;
+    }
+
+    .docs-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 20px;
+    }
+
+    @media (min-width: 768px) {
+      .docs-grid {
+        grid-template-columns: 1fr 1fr;
+      }
+    }
+
+    .doc-card {
+      background: var(--card-bg);
+      border: 1px solid var(--border-color);
+      border-radius: 20px;
+      padding: 26px;
+      display: flex;
+      flex-direction: column;
+      gap: 15px;
+    }
+
+    .doc-card-title {
+      font-size: 0.85rem;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--accent-color);
+    }
+
+    .doc-code-block {
+      background: rgba(0, 0, 0, 0.3);
+      border: 1px solid rgba(255, 255, 255, 0.03);
+      padding: 16px;
+      border-radius: 12px;
+      font-family: monospace;
+      font-size: 0.8rem;
+      color: #df9bf8;
+      word-break: break-all;
+      position: relative;
+    }
+
+    .doc-copy-btn {
+      align-self: flex-start;
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      color: var(--text-color);
+      padding: 8px 14px;
+      font-size: 0.8rem;
+      font-weight: 700;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .doc-copy-btn:hover {
+      background: var(--accent-color);
+      color: #ffffff;
+      border-color: var(--accent-color);
+      box-shadow: 0 0 15px rgba(163, 89, 236, 0.2);
+    }
+
+    /* ----------------------------------
+       PLAYER VIEW (smov frontend player)
+       ---------------------------------- */
+    .player-view {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      background-color: #000000;
+      display: none; /* Toggled by JS */
+    }
+
+    .smov-frame {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      border: 0;
+      background: #000;
+    }
+  </style>
+</head>
+<body>
+
+  <div id="app">
+
+    <!-- ----------------------------------
+         1. LANDING VIEW (No tmdbId provided)
+         ---------------------------------- -->
+    <div id="landing-view" class="landing-view" style="display: none;">
+
+      <header class="nav-header">
+        <a href="/embed/" class="brand-logo">
+          pee<span>stream</span>
+        </a>
+        <nav class="nav-links">
+          <a href="#servers" class="nav-link-item">Servers</a>
+          <a href="#docs" class="nav-link-item">Documentation</a>
+        </nav>
+      </header>
+
+      <section class="hero-container">
+        <h1 class="hero-title">
+          the ultimate embed<br>pee<span class="logo-stream">stream</span> player
+        </h1>
+        <p class="hero-subtitle">
+          Ultra-fast, ad-free movie and TV show embedding. Powering your site's media player with high-compatibility stream providers.
+        </p>
+
+        <div class="generator-box">
+          <div class="tab-switcher">
+            <button id="tab-movie" class="tab-btn active" onclick="switchTab('movie')">Movie</button>
+            <button id="tab-show" class="tab-btn" onclick="switchTab('show')">TV Show</button>
+          </div>
+
+          <div class="input-row">
+            <input type="text" id="input-tmdb" class="gen-input flex-main" placeholder="TMDB ID (e.g. 157336)">
+
+            <input type="text" id="input-season" class="gen-input width-small" placeholder="S" style="display: none;">
+            <input type="text" id="input-episode" class="gen-input width-small" placeholder="E" style="display: none;">
+          </div>
+
+          <div style="display: flex; gap: 12px; width: 100%;">
+            <button class="play-btn" style="flex: 1;" onclick="generateAndPlay()">
+              <i class="fa-solid fa-expand"></i> Standalone
+            </button>
+            <button class="play-btn preview-btn" style="flex: 1;" onclick="loadPreview()">
+              <i class="fa-solid fa-circle-play"></i> Live Preview
+            </button>
+          </div>
+        </div>
+
+        <div id="live-preview-section" class="preview-container">
+          <div id="preview-placeholder" class="preview-placeholder">
+            <i class="fa-solid fa-tv"></i>
+            <span>Enter a TMDB ID above and click "Live Preview" to test the player here.</span>
+          </div>
+          <iframe id="preview-iframe" class="preview-iframe" allowfullscreen allow="autoplay; encrypted-media"></iframe>
+        </div>
+      </section>
+
+      <section id="servers" class="section-container">
+        <h2 class="section-title">Servers on the label</h2>
+        <p class="section-desc">We load balance and fetch media from multiple reliable stream sources automatically.</p>
+
+        <div id="server-list" class="server-list-card">
+          <div class="server-item">
+            <div class="server-index">01</div>
+            <div class="server-info">
+              <div class="server-name">poseidon</div>
+              <div class="server-blurb">Ultra-fast multi-source streaming server.</div>
+            </div>
+            <div class="server-badge high">high speed</div>
+          </div>
+
+          <div class="server-item">
+            <div class="server-index">02</div>
+            <div class="server-info">
+              <div class="server-name">athena</div>
+              <div class="server-blurb">High resolution proxied media server with fallback levels.</div>
+            </div>
+            <div class="server-badge high">high speed</div>
+          </div>
+
+          <div class="server-item">
+            <div class="server-index">03</div>
+            <div class="server-info">
+              <div class="server-name">poseidon</div>
+              <div class="server-blurb">Stable media stream catalog and load-balancer.</div>
+            </div>
+            <div class="server-badge">stable</div>
+          </div>
+        </div>
+      </section>
+
+      <section id="docs" class="section-container">
+        <h2 class="section-title">Documentation</h2>
+        <p class="section-desc">Implement peestream easily using our standard iframe URL templates.</p>
+
+        <div class="docs-grid">
+          <div class="doc-card">
+            <div class="doc-card-title">Movies API</div>
+            <div class="doc-code-block" id="code-movie-tpl">https://peestream.in/embed/?tmdbId={tmdbId}&type=movie</div>
+            <button class="doc-copy-btn" onclick="copyText('code-movie-tpl')">
+              <i class="fa-regular fa-copy"></i> copy url template
+            </button>
+          </div>
+
+          <div class="doc-card">
+            <div class="doc-card-title">TV Shows API</div>
+            <div class="doc-code-block" id="code-tv-tpl">https://peestream.in/embed/?tmdbId={tmdbId}&type=tv&season={season}&episode={episode}</div>
+            <button class="doc-copy-btn" onclick="copyText('code-tv-tpl')">
+              <i class="fa-regular fa-copy"></i> copy url template
+            </button>
+          </div>
+        </div>
+      </section>
+
+    </div>
+
+    <!-- ----------------------------------
+         2. PLAYER VIEW (tmdbId provided)
+         Loads the real peestream smov player
+         ---------------------------------- -->
+    <div id="player-view" class="player-view">
+      <iframe id="smov-frame" class="smov-frame" allow="autoplay; fullscreen; picture-in-picture; encrypted-media" allowfullscreen referrerpolicy="origin" sandbox="allow-scripts allow-same-origin allow-popups allow-presentation"></iframe>
+    </div>
+
+  </div>
+
+  <script>
+    (function () {
+      const urlParams = new URLSearchParams(window.location.search);
+      const tmdbId = urlParams.get('tmdbId');
+      const type = (urlParams.get('type') || 'movie').toLowerCase();
+      const season = urlParams.get('season');
+      const episode = urlParams.get('episode');
+
+      const landingView = document.getElementById('landing-view');
+      const playerView = document.getElementById('player-view');
+      const smovFrame = document.getElementById('smov-frame');
+
+      document.getElementById('code-movie-tpl').innerText = `${window.location.origin}${window.location.pathname}?tmdbId={tmdbId}&type=movie`;
+      document.getElementById('code-tv-tpl').innerText = `${window.location.origin}${window.location.pathname}?tmdbId={tmdbId}&type=tv&season={season}&episode={episode}`;
+
+      // Routing
+      if (tmdbId) {
+        landingView.style.display = 'none';
+        playerView.style.display = 'block';
+
+        // smov media URL: movie -> tmdb-movie-{id}, tv/show -> tmdb-show-{id}/{season}/{episode}
+        const isTv = type === 'tv' || type === 'show' || type === 'series';
+        let mediaPath;
+        if (isTv && season && episode) {
+          mediaPath = `tmdb-show-${encodeURIComponent(tmdbId)}/${encodeURIComponent(season)}/${encodeURIComponent(episode)}`;
+        } else {
+          mediaPath = isTv
+            ? `tmdb-show-${encodeURIComponent(tmdbId)}/${encodeURIComponent(season || 1)}/${encodeURIComponent(episode || 1)}`
+            : `tmdb-movie-${encodeURIComponent(tmdbId)}`;
+        }
+        smovFrame.src = `https://peestream.in/media/${mediaPath}`;
+      } else {
+        landingView.style.display = 'flex';
+        playerView.style.display = 'none';
+      }
+    })();
+
+    // ----------------------------------
+    // LANDING VIEW JAVASCRIPT LOGIC
+    // ----------------------------------
+    let currentTab = 'movie';
+
+    function loadServers() {
+      const container = document.getElementById('server-list');
+      if (!container) return;
+      fetch(`${window.location.origin}/api/providers`)
+        .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
+        .then((providers) => {
+          const list = Object.entries(providers)
+            .sort((a, b) => (a[1].priority ?? 999) - (b[1].priority ?? 999));
+          container.innerHTML = list
+            .map(
+              ([id, p], i) => `
+              <div class="server-item ${p.enabled ? '' : 'off'}">
+                <div class="server-index">${String(i + 1).padStart(2, '0')}</div>
+                <div class="server-info">
+                  <div class="server-name-row">
+                    <div class="server-name">${escapeHtml(p.name || id)}</div>
+                    <button class="server-rename-btn" title="Rename scraper" onclick="renameServer('${escapeHtml(id)}')">
+                      <i class="fa-solid fa-pen"></i>
+                    </button>
+                  </div>
+                  <div class="server-blurb">${escapeHtml(id)}</div>
+                </div>
+                <div class="server-badge ${p.enabled ? 'high' : ''}">${p.enabled ? 'enabled' : 'disabled'}</div>
+              </div>`
+            )
+            .join('');
+        })
+        .catch(() => {
+          // keep the static fallback list
+        });
+    }
+
+    function renameServer(id) {
+      const current = prompt(`Rename scraper "${id}" (leave empty to reset to default):`);
+      if (current === null) return;
+      const name = current.trim();
+      fetch(`${window.location.origin}/api/providers/${encodeURIComponent(id)}/name`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      })
+        .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
+        .then(() => {
+          loadServers();
+          alert(name ? `Scraper renamed to "${name}". The peestream player will show it within a few minutes.` : `Scraper name reset to default.`);
+        })
+        .catch(() => alert('Failed to rename scraper.'));
+    }
+
+    function escapeHtml(str) {
+      return String(str).replace(/[&<>"']/g, (c) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+      }[c]));
+    }
+
+    function switchTab(tab) {
+      currentTab = tab;
+      const tabMovie = document.getElementById('tab-movie');
+      const tabShow = document.getElementById('tab-show');
+      const inputSeason = document.getElementById('input-season');
+      const inputEpisode = document.getElementById('input-episode');
+      const inputTmdb = document.getElementById('input-tmdb');
+
+      if (tab === 'movie') {
+        tabMovie.classList.add('active');
+        tabShow.classList.remove('active');
+        inputSeason.style.display = 'none';
+        inputEpisode.style.display = 'none';
+        inputTmdb.placeholder = "TMDB ID (e.g. 157336)";
+      } else {
+        tabMovie.classList.remove('active');
+        tabShow.classList.add('active');
+        inputSeason.style.display = 'block';
+        inputEpisode.style.display = 'block';
+        inputTmdb.placeholder = "TMDB ID (e.g. 94997)";
+      }
+    }
+
+    function generateAndPlay() {
+      const tmdbVal = document.getElementById('input-tmdb').value.trim();
+      const seasonVal = document.getElementById('input-season').value.trim();
+      const episodeVal = document.getElementById('input-episode').value.trim();
+
+      if (!tmdbVal) {
+        alert("Please enter a valid TMDB ID.");
+        return;
+      }
+
+      let playUrl = `${window.location.pathname}?tmdbId=${tmdbVal}&type=${currentTab === 'movie' ? 'movie' : 'show'}`;
+      if (currentTab === 'show') {
+        if (!seasonVal || !episodeVal) {
+          alert("Please enter both Season and Episode.");
+          return;
+        }
+        playUrl += `&season=${seasonVal}&episode=${episodeVal}`;
+      }
+      window.location.href = playUrl;
+    }
+
+    function loadPreview() {
+      const tmdbVal = document.getElementById('input-tmdb').value.trim();
+      const seasonVal = document.getElementById('input-season').value.trim();
+      const episodeVal = document.getElementById('input-episode').value.trim();
+
+      if (!tmdbVal) {
+        alert("Please enter a valid TMDB ID.");
+        return;
+      }
+
+      let playUrl = `${window.location.origin}${window.location.pathname}?tmdbId=${tmdbVal}&type=${currentTab === 'movie' ? 'movie' : 'show'}`;
+      if (currentTab === 'show') {
+        if (!seasonVal || !episodeVal) {
+          alert("Please enter both Season and Episode.");
+          return;
+        }
+        playUrl += `&season=${seasonVal}&episode=${episodeVal}`;
+      }
+
+      const embedUrl = `${playUrl}&title=Preview%20Player`;
+      const iframe = document.getElementById('preview-iframe');
+      const placeholder = document.getElementById('preview-placeholder');
+
+      placeholder.style.display = 'none';
+      iframe.style.display = 'block';
+      iframe.src = embedUrl;
+
+      document.getElementById('live-preview-section').scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+
+    function copyText(elemId) {
+      const txt = document.getElementById(elemId).innerText;
+      navigator.clipboard.writeText(txt).then(() => {
+        alert("URL template copied to clipboard!");
+      }).catch(err => {
+        console.error("Failed to copy:", err);
+      });
+    }
+
+    loadServers();
+  </script>
+</body>
+</html>

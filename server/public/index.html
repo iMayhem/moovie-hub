@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>StreamScraper Hub</title>
+<link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css">
+<link rel="stylesheet" href="/css/style.css">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="icon" type="image/x-icon" href="/favicon.ico">
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1.4.0/dist/hls.min.js"></script>
+</head>
+<body>
+<nav class="sidebar">
+  <div class="sidebar-header">
+    <h1>🎬 StreamScraper</h1>
+    <p class="subtitle">All-in-One Media Scraper</p>
+  </div>
+  <div class="sidebar-nav">
+    <button class="nav-btn active" data-view="search" onclick="switchView('search')">🔍 Search</button>
+    <button class="nav-btn" data-view="player" onclick="switchView('player')">▶️ Player</button>
+    <button class="nav-btn" data-view="embed" onclick="switchView('embed')">🎬 Embed Debug</button>
+    <button class="nav-btn" data-view="scraper-test" onclick="switchView('scraper-test')">🧪 Scraper Test</button>
+    <button class="nav-btn" data-view="providers" onclick="switchView('providers')">⚙️ Providers</button>
+    <button class="nav-btn" data-view="filters" onclick="switchView('filters')">🎯 Filters</button>
+    <button class="nav-btn" data-view="analytics" onclick="switchView('analytics')">📊 Analytics</button>
+    <button class="nav-btn" data-view="settings" onclick="switchView('settings')">🔧 Settings</button>
+    <button class="nav-btn" data-view="git" onclick="switchView('git')">🔄 Backup</button>
+    <button class="nav-btn" data-view="info" onclick="switchView('info')">📡 Connection</button>
+    <a href="/docs" class="nav-btn" style="display:block;text-decoration:none">📖 Docs</a>
+    <a href="/embed" class="nav-btn" style="display:block;text-decoration:none">📺 Embed</a>
+    <button class="nav-btn logout-btn" onclick="handleLogout()" style="margin-top:12px;border:1px solid rgba(239,68,68,0.3);color:#ef4444">🔒 Lock Panel</button>
+  </div>
+  <div class="sidebar-footer">
+    <span id="providerCount">Loading...</span>
+  </div>
+</nav>
+
+<main class="main-content">
+  <!-- Search View -->
+  <div id="view-search" class="view active">
+    <div class="search-section">
+      <div class="search-bar">
+        <input type="text" id="searchInput" placeholder="Enter TMDB ID or search by ID... (e.g. 550)" onkeydown="if(event.key==='Enter') doSearch()">
+        <select id="typeSelect">
+          <option value="movie">🎬 Movie</option>
+          <option value="tv">📺 TV Show</option>
+        </select>
+        <button onclick="doSearch()">🔍 Search</button>
+      </div>
+      <div class="search-options">
+        <label>Season: <input type="number" id="seasonInput" min="1" placeholder="1" style="width:60px"></label>
+        <label>Episode: <input type="number" id="episodeInput" min="1" placeholder="1" style="width:60px"></label>
+      </div>
+    </div>
+
+    <div id="statusBar" class="status-bar"></div>
+    <div id="results" class="results-container"></div>
+  </div>
+
+  <!-- Player View -->
+  <div id="view-player" class="view">
+    <div class="view-header player-view-header">
+      <h2>▶️ Media Player</h2>
+      <p id="playerMeta">Select a stream from search results to play</p>
+    </div>
+    <div class="test-bar">
+      <div class="test-inputs">
+        <input type="text" id="testTmdbId" placeholder="TMDB ID (e.g. 550)" onkeydown="if(event.key==='Enter') startTest()">
+        <select id="testTypeSelect">
+          <option value="movie">🎬 Movie</option>
+          <option value="tv">📺 TV Show</option>
+        </select>
+        <label>Season: <input type="number" id="testSeason" min="1" placeholder="1" class="test-sm-input"></label>
+        <label>Episode: <input type="number" id="testEpisode" min="1" placeholder="1" class="test-sm-input"></label>
+        <button id="testBtn" onclick="startTest()">🧪 Test</button>
+        <label class="test-toggle" title="Ping streams as they arrive, then play the fastest one">
+          <input type="checkbox" id="smartPingToggle" checked>
+          <span>⚡ Smart ping</span>
+        </label>
+      </div>
+    </div>
+    <div class="player-layout">
+      <div class="player-main">
+    <div id="playerContainer" style="position:relative">
+      <div id="playerLoader" class="player-loader" style="display:none">
+        <div class="player-spinner"></div>
+        <div class="player-loader-text">Loading stream...</div>
+      </div>
+      <video id="plyrVideo" playsinline controls preload="auto" crossorigin></video>
+    </div>
+      </div>
+      <div class="player-sidebar">
+        <div id="sourceSelector" class="source-selector" style="display:none">
+          <h3>📡 Source Selection</h3>
+          <div id="sourceList" class="source-list"></div>
+        </div>
+        <div id="pingPanel" class="ping-panel" style="display:none">
+          <div class="ping-panel-header">
+            <h3>📊 Ping Results</h3>
+          </div>
+          <div id="pingList" class="ping-list"></div>
+        </div>
+        <div id="testPanel" class="test-panel" style="display:none">
+      <div class="test-panel-header">
+        <h3>📋 Realtime Scrape Log <span id="testCounter" class="test-counter"></span></h3>
+        <div style="display:flex;gap:4px">
+          <button id="stopTestBtn" class="btn-secondary" onclick="stopTest()" style="display:none">⏹ Stop</button>
+          <button class="btn-secondary" onclick="clearTestLog()">Clear</button>
+        </div>
+      </div>
+          <div id="testLog" class="test-log"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Embed Debug View -->
+  <div id="view-embed" class="view">
+    <div class="view-header">
+      <h2>🎬 Embed Debug</h2>
+      <p>Load the embed player and watch realtime scrape logs.</p>
+    </div>
+    <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:14px;align-items:center">
+      <input type="text" id="embedTmdbId" placeholder="TMDB ID (e.g. 550)" style="width:140px" value="550">
+      <select id="embedType" style="width:110px">
+        <option value="movie">🎬 Movie</option>
+        <option value="tv">📺 TV Show</option>
+      </select>
+      <input type="text" id="embedSeason" placeholder="Season" style="width:80px">
+      <input type="text" id="embedEpisode" placeholder="Episode" style="width:80px">
+      <button onclick="loadEmbed()" style="background:var(--accent,#a359ec);color:#fff;border:none;padding:8px 18px;border-radius:8px;cursor:pointer">▶️ Load Embed</button>
+      <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text2,#888)"><input type="checkbox" id="embedLiveLogs" checked onchange="connectEmbedLogs()"> Live logs</label>
+      <button onclick="clearEmbedLogs()" style="background:rgba(239,68,68,.15);color:#ef4444;border:1px solid rgba(239,68,68,.3);padding:8px 14px;border-radius:8px;cursor:pointer">🧹 Clear Logs</button>
+      <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text2,#888)"><input type="checkbox" id="myLogsLive" checked onchange="connectMyLogs()"> My logs</label>
+      <button onclick="clearMyLogs()" style="background:rgba(239,68,68,.15);color:#ef4444;border:1px solid rgba(239,68,68,.3);padding:8px 14px;border-radius:8px;cursor:pointer">🧹 Clear My Logs</button>
+      <button onclick="deployEmbed()" id="deployBtn" style="background:rgba(34,197,94,.15);color:#22c55e;border:1px solid rgba(34,197,94,.3);padding:8px 14px;border-radius:8px;cursor:pointer">🚀 Deploy to Original Embed</button>
+      <span id="deployStatus" style="font-size:11px;color:var(--text2,#888)"></span>
+    </div>
+    <div style="display:grid;grid-template-columns:minmax(280px,1fr) minmax(340px,1fr) minmax(340px,1fr);gap:14px;align-items:start">
+      <div style="background:var(--card-bg,#0f0f1b);border:1px solid rgba(255,255,255,.08);border-radius:12px;overflow:hidden;aspect-ratio:16/10">
+        <iframe id="embedFrame" src="/embed/" style="width:100%;height:100%;border:none" allowfullscreen></iframe>
+      </div>
+      <div style="background:var(--card-bg,#0f0f1b);border:1px solid rgba(255,255,255,.08);border-radius:12px;overflow:hidden;display:flex;flex-direction:column;max-height:480px">
+        <div style="padding:10px 14px;border-bottom:1px solid rgba(255,255,255,.08);font-weight:600;font-size:13px;display:flex;justify-content:space-between;align-items:center">
+          <span>📡 Realtime Scrape Logs</span>
+          <span id="embedLogStatus" style="font-size:11px;color:var(--text2,#888)">connecting...</span>
+        </div>
+        <div id="embedLogPanel" style="flex:1;overflow-y:auto;padding:10px 12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;line-height:1.7;min-height:300px"></div>
+      </div>
+      <div style="background:var(--card-bg,#0f0f1b);border:1px solid rgba(255,255,255,.08);border-radius:12px;overflow:hidden;display:flex;flex-direction:column;max-height:480px">
+        <div style="padding:10px 14px;border-bottom:1px solid rgba(255,255,255,.08);font-weight:600;font-size:13px;display:flex;justify-content:space-between;align-items:center">
+          <span>🧑 My Player Logs</span>
+          <span id="myLogsStatus" style="font-size:11px;color:var(--text2,#888)">waiting for embed session...</span>
+        </div>
+        <div id="myLogsPanel" style="flex:1;overflow-y:auto;padding:10px 12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;line-height:1.7;min-height:300px"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Scraper Test View -->
+  <div id="view-scraper-test" class="view">
+    <div class="view-header">
+      <h2>🧪 Isolated Scraper Test</h2>
+      <p>Test a single scraper in isolation, or run it exactly like the embed does.</p>
+    </div>
+    <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:14px;align-items:center">
+      <select id="testProvider" style="width:200px">
+        <option value="">-- Select provider --</option>
+      </select>
+      <select id="testMode" style="width:170px">
+        <option value="isolated">Isolated (no fallback)</option>
+        <option value="embed">Embed mode (all providers)</option>
+      </select>
+      <select id="scraperTestProxy" title="Stream proxy" style="width:150px">
+        <option value="1" selected>🔒 Cloudflare</option>
+        <option value="vps">🖥️ VPS</option>
+        <option value="0">Direct (no proxy)</option>
+      </select>
+      <input type="text" id="scraperTestTmdbId" placeholder="TMDB ID" style="width:110px" value="550">
+      <select id="testType" style="width:100px">
+        <option value="movie">🎬 Movie</option>
+        <option value="tv">📺 TV</option>
+      </select>
+      <input type="text" id="scraperTestSeason" placeholder="Season" style="width:80px">
+      <input type="text" id="scraperTestEpisode" placeholder="Episode" style="width:80px">
+      <button onclick="runScraperTest()" style="background:var(--accent,#a359ec);color:#fff;border:none;padding:8px 18px;border-radius:8px;cursor:pointer">▶️ Run Test</button>
+      <button onclick="clearScraperTest()" style="background:rgba(239,68,68,.15);color:#ef4444;border:1px solid rgba(239,68,68,.3);padding:8px 14px;border-radius:8px;cursor:pointer">🧹 Clear</button>
+      <span id="testStatus" style="font-size:12px;color:var(--text2,#888)"></span>
+    </div>
+    <div id="testSubServers" class="sub-servers" data-provider="" style="margin-bottom:14px;display:none"></div>
+    <div style="display:grid;grid-template-columns:minmax(380px,1fr) minmax(380px,1fr);gap:14px;align-items:start;margin-bottom:14px">
+      <div style="background:var(--card-bg,#0f0f1b);border:1px solid rgba(255,255,255,.08);border-radius:12px;overflow:hidden">
+        <div style="padding:10px 14px;border-bottom:1px solid rgba(255,255,255,.08);font-weight:600;font-size:13px">🎥 Player</div>
+        <div style="padding:10px">
+          <video id="scraperTestVideo" controls style="width:100%;aspect-ratio:16/9;background:#000;border-radius:8px;display:block"></video>
+          <div id="scraperTestStreamList" style="margin-top:10px;display:flex;flex-direction:column;gap:6px;font-size:12px"></div>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-rows:auto auto;gap:14px">
+        <div style="background:var(--card-bg,#0f0f1b);border:1px solid rgba(255,255,255,.08);border-radius:12px;overflow:hidden;display:flex;flex-direction:column;max-height:260px">
+          <div style="padding:10px 14px;border-bottom:1px solid rgba(255,255,255,.08);font-weight:600;font-size:13px">⚡ Live SSE Events</div>
+          <div id="testEventLog" style="flex:1;overflow-y:auto;padding:10px 12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;line-height:1.7;min-height:180px"></div>
+        </div>
+        <div style="background:var(--card-bg,#0f0f1b);border:1px solid rgba(255,255,255,.08);border-radius:12px;overflow:hidden;display:flex;flex-direction:column;max-height:260px">
+          <div style="padding:10px 14px;border-bottom:1px solid rgba(255,255,255,.08);font-weight:600;font-size:13px">📦 Raw Output (streams JSON)</div>
+          <pre id="testRawOutput" style="flex:1;overflow:auto;padding:12px 14px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;line-height:1.6;margin:0;min-height:180px;white-space:pre-wrap;word-break:break-all">Run a test to see raw output...</pre>
+        </div>
+      </div>
+    </div>
+    <div style="background:var(--card-bg,#0f0f1b);border:1px solid rgba(255,255,255,.08);border-radius:12px;overflow:hidden">
+      <div style="padding:10px 14px;border-bottom:1px solid rgba(255,255,255,.08);font-weight:600;font-size:13px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <span>📝 Scraper Code Editor <span style="font-weight:400;color:var(--text2,#888)">(saves directly to /root/api/deobfuscated on VPS, hot-reloads)</span></span>
+        <span style="display:flex;gap:8px;align-items:center">
+          <select id="scraperFileSelect" style="width:220px;padding:6px 8px;border-radius:8px;background:#15152a;color:#e5e7eb;border:1px solid rgba(255,255,255,.12)"></select>
+          <button onclick="loadScraperFile()" style="background:rgba(255,255,255,.08);color:#e5e7eb;border:1px solid rgba(255,255,255,.15);padding:6px 14px;border-radius:8px;cursor:pointer">📂 Load</button>
+          <button onclick="saveScraperFile()" style="background:var(--accent,#a359ec);color:#fff;border:none;padding:6px 14px;border-radius:8px;cursor:pointer">💾 Save & Reload</button>
+          <span id="scraperFileStatus" style="font-size:11px;color:var(--text2,#888)"></span>
+        </span>
+      </div>
+      <textarea id="scraperFileEditor" spellcheck="false" style="width:100%;height:420px;background:#0b0b14;color:#d4d4d8;border:none;border-top:1px solid rgba(255,255,255,.06);padding:14px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;line-height:1.6;resize:vertical;outline:none" placeholder="Select a scraper file and click Load..."></textarea>
+    </div>
+  </div>
+
+  <!-- Providers View -->
+  <div id="view-providers" class="view">
+    <div class="view-header">
+      <h2>⚙️ Provider Management</h2>
+      <p>Toggle providers on/off, drag to reorder priority, and disable specific sub-servers.</p>
+    </div>
+    <div id="providerList" class="provider-list"></div>
+  </div>
+
+  <!-- Filters View -->
+  <div id="view-filters" class="view">
+    <div class="view-header">
+      <h2>🎯 Quality Filters</h2>
+      <p>Choose which stream qualities to show in search results. Unchecked qualities will be hidden.</p>
+    </div>
+    <div class="filters-form">
+      <div class="setting-group">
+        <h3>Allowed Resolutions</h3>
+        <label class="filter-checkbox">
+          <input type="checkbox" id="filter4k" checked onchange="saveFilterState()">
+          <span class="checkmark"></span>
+          <span>4K (2160p) <span class="qual-badge q-4k">Ultra HD</span></span>
+        </label>
+        <label class="filter-checkbox">
+          <input type="checkbox" id="filter1080" checked onchange="saveFilterState()">
+          <span class="checkmark"></span>
+          <span>1080p <span class="qual-badge q-1080">Full HD</span></span>
+        </label>
+        <label class="filter-checkbox">
+          <input type="checkbox" id="filter720" checked onchange="saveFilterState()">
+          <span class="checkmark"></span>
+          <span>720p <span class="qual-badge q-720">HD</span></span>
+        </label>
+        <label class="filter-checkbox">
+          <input type="checkbox" id="filterSd" checked onchange="saveFilterState()">
+          <span class="checkmark"></span>
+          <span>SD (480p, 360p, 240p) <span class="qual-badge q-sd">Standard</span></span>
+        </label>
+        <label class="filter-checkbox">
+          <input type="checkbox" id="filterUnknown" checked onchange="saveFilterState()">
+          <span class="checkmark"></span>
+          <span>Unknown Quality <span class="qual-badge q-unknown">Auto</span></span>
+        </label>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:4px">
+        <button onclick="toggleAllFilters(true)" class="btn-primary">Select All</button>
+        <button onclick="toggleAllFilters(false)" class="btn-secondary">Deselect All</button>
+        <span id="filterStatus" style="margin-left:12px;font-size:12px;color:var(--text2);display:flex;align-items:center"></span>
+      </div>
+      <p class="filter-note">Filters apply to the search results display. When a quality is unchecked, streams matching that resolution won't appear in results or the source selector.</p>
+    </div>
+  </div>
+
+  <!-- Analytics View -->
+  <div id="view-analytics" class="view">
+    <div class="view-header">
+      <h2>📊 Analytics</h2>
+      <p id="analyticsSub">Real-time video player analytics</p>
+    </div>
+    <div class="an-stats-row" id="anStatsRow">
+      <div class="an-stat-card"><div class="an-stat-value" id="anPageViews">0</div><div class="an-stat-label">Page Views</div></div>
+      <div class="an-stat-card"><div class="an-stat-value" id="anPlays">0</div><div class="an-stat-label">Plays</div></div>
+      <div class="an-stat-card"><div class="an-stat-value" id="anErrors">0</div><div class="an-stat-label">Errors</div></div>
+      <div class="an-stat-card"><div class="an-stat-value" id="anUnique">0</div><div class="an-stat-label">Unique Visitors</div></div>
+      <div class="an-stat-card an-stat-live" id="anActiveCard"><div class="an-stat-value" id="anActive">0</div><div class="an-stat-label"><span class="an-dot"></span> Active Now</div></div>
+    </div>
+    <div class="an-grid" style="margin-bottom:16px">
+      <div class="an-panel">
+        <h3>🌐 Embedding Websites / Domains</h3>
+        <div id="anTopDomains" class="an-active-users"><div class="loading">Loading...</div></div>
+      </div>
+      <div class="an-panel">
+        <h3>🎬 Top Embedded Titles</h3>
+        <div id="anTopMedia" class="an-active-users"><div class="loading">Loading...</div></div>
+      </div>
+    </div>
+    <div class="an-grid">
+      <div class="an-panel">
+        <h3>📈 Activity (Last 24h)</h3>
+        <div id="anHourlyChart" class="an-hourly-chart"><div class="loading">Loading...</div></div>
+      </div>
+      <div class="an-panel">
+        <h3>👤 Active Users</h3>
+        <div id="anActiveUsers" class="an-active-users"><div class="loading">Loading...</div></div>
+      </div>
+    </div>
+    <div class="an-panel" style="margin-top:16px">
+      <h3>📋 Recent Events</h3>
+      <div class="an-event-controls">
+        <select id="anEventFilter" onchange="loadAnalyticsEvents()">
+          <option value="all">All Events</option>
+          <option value="pageview">Page Views</option>
+          <option value="play">Plays</option>
+          <option value="error">Errors</option>
+          <option value="quality_change">Quality Changes</option>
+          <option value="audio_change">Audio Changes</option>
+        </select>
+      </div>
+      <div id="anEventsList" class="an-events-list"><div class="loading">Loading...</div></div>
+    </div>
+  </div>
+
+  <!-- Settings View -->
+  <div id="view-settings" class="view">
+    <div class="view-header">
+      <h2>🔧 Settings</h2>
+    </div>
+    <div class="settings-form">
+      <div class="setting-group">
+        <h3>Server</h3>
+        <label>Port: <input type="number" id="setPort" value="3000"></label>
+        <label>Global Timeout (ms): <input type="number" id="setTimeout" value="20000"></label>
+        <label>Max Results Per Provider: <input type="number" id="setMaxResults" value="20"></label>
+      </div>
+      <div class="setting-group">
+        <h3>TMDB API</h3>
+        <label>API Key: <input type="text" id="setTmdbKey" style="width:400px"></label>
+        <p class="hint">Used by some providers for metadata resolution</p>
+      </div>
+      <div class="setting-group">
+        <h3>🌐 Proxy</h3>
+        <label><input type="checkbox" id="setProxyEnabled"> Enable Proxy (outbound)</label>
+        <label>Type: <select id="setProxyType"><option value="http">HTTP</option><option value="socks5">SOCKS5</option></select></label>
+        <label>Host: <input type="text" id="setProxyHost" placeholder="127.0.0.1"></label>
+        <label>Port: <input type="number" id="setProxyPort" placeholder="8080"></label>
+        <label>Username: <input type="text" id="setProxyUser" placeholder="(optional)"></label>
+        <label>Password: <input type="password" id="setProxyPass" placeholder="(optional)"></label>
+      </div>
+      <div class="setting-group">
+        <h3>🛡️ Stream Proxy</h3>
+        <label><input type="checkbox" id="setStreamProxy"> Hide upstream sources (proxy all streams through this server)</label>
+        <p class="hint">When enabled, stream URLs are served through this server instead of directly, hiding the original source URLs from clients.</p>
+      </div>
+      <div class="setting-group">
+        <h3>🎬 Player</h3>
+        <label><input type="checkbox" id="setAutoplay"> Enable autoplay (global default for embed)</label>
+        <label><input type="checkbox" id="setIntroSkip"> Enable intro/credits skip (global default for embed)</label>
+        <label style="display:flex;align-items:center;gap:8px">
+          <span>Index bar opacity:</span>
+          <input type="range" id="setIndexOpacity" min="0.1" max="1" step="0.05" value="0.85" oninput="applyIndexOpacity(this.value)" style="flex:1;max-width:200px">
+          <span id="indexOpacityVal">85%</span>
+        </label>
+      </div>
+      <div class="setting-group">
+        <h3>🔊 Audio</h3>
+        <label>Preferred audio language: <input type="text" id="setAudioLang" placeholder="e.g. English, Japanese" style="width:200px"></label>
+        <p class="hint">When a stream plays, if this language is available it will be selected automatically. Leave empty for default.</p>
+        <div id="currentAudioTracks" class="audio-tracks-info" style="margin-top:8px;padding:8px;background:var(--bg2);border-radius:6px;border:1px solid var(--border)">
+          <div style="font-size:12px;color:var(--text2);margin-bottom:4px">Available audio tracks:</div>
+          <div id="audioTracksList" style="font-size:13px;color:var(--text)">No audio tracks loaded. Play a stream to see available tracks.</div>
+        </div>
+      </div>
+      <button onclick="saveSettings()" class="btn-primary">💾 Save Settings</button>
+      <span id="settingsStatus"></span>
+    </div>
+  </div>
+
+  <!-- Backup View -->
+  <div id="view-git" class="view">
+    <div class="view-header">
+      <h2>🔄 Backup &amp; Restore</h2>
+      <p>One-click backup of every VPS change to GitHub, and quick rollback if something breaks.</p>
+    </div>
+    <div id="gitStatus" style="margin-bottom:12px"></div>
+    <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:14px">
+      <button class="btn-primary" onclick="gitCommitNow()">💾 Save backup now (commit &amp; push)</button>
+      <button class="btn-secondary" onclick="loadGitView()">🔄 Refresh</button>
+    </div>
+    <div style="background:var(--card-bg,#0f0f1b);border:1px solid rgba(255,255,255,.08);border-radius:12px;margin-bottom:14px;overflow:hidden">
+      <div style="padding:10px 14px;border-bottom:1px solid rgba(255,255,255,.08);font-weight:600;font-size:13px">📝 Uncommitted changes</div>
+      <div id="gitChanged" style="padding:10px 14px;font-size:12px"></div>
+    </div>
+    <div style="background:var(--card-bg,#0f0f1b);border:1px solid rgba(255,255,255,.08);border-radius:12px;overflow:hidden">
+      <div style="padding:10px 14px;border-bottom:1px solid rgba(255,255,255,.08);font-weight:600;font-size:13px">📜 Backup history — click ⏪ to roll the whole server back to that backup</div>
+      <div id="gitLog" style="padding:6px 14px 12px;font-size:12px"></div>
+    </div>
+  </div>
+
+  <!-- Info View -->
+  <div id="view-info" class="view">
+    <div class="view-header">
+      <h2>📡 Connection Info</h2>
+      <p>Details for connecting to this scraper instance from other apps.</p>
+    </div>
+    <div id="infoContent" class="info-content">
+      <div class="loading">Loading...</div>
+    </div>
+  </div>
+</main>
+
+<!-- Lock Screen Modal Panel -->
+<div id="lockScreenOverlay" class="lock-overlay">
+  <div class="lock-card">
+    <div class="lock-icon">🔒</div>
+    <div class="lock-badge">LOCKED PANEL</div>
+    <h2 style="margin:8px 0 4px 0;font-size:22px;color:var(--text,#fff)">StreamScraper Hub</h2>
+    <p style="margin:0 0 20px 0;font-size:13px;color:var(--text2,#888)">Enter administrator credentials to unlock</p>
+    <form id="lockLoginForm" onsubmit="handleLoginSubmit(event)">
+      <div class="lock-field">
+        <label for="lockUsername">Username</label>
+        <input type="text" id="lockUsername" placeholder="admin" required autocomplete="username">
+      </div>
+      <div class="lock-field">
+        <label for="lockPassword">Password</label>
+        <input type="password" id="lockPassword" placeholder="••••••••" required autocomplete="current-password">
+      </div>
+      <div id="lockErrorMsg" class="lock-error" style="display:none"></div>
+      <button type="submit" id="lockSubmitBtn" class="lock-btn">Unlock Panel 🔑</button>
+    </form>
+  </div>
+</div>
+
+<script src="https://cdn.plyr.io/3.7.8/plyr.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+<script src="/js/player-config.js"></script>
+<script src="/js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,36 @@
+// Shared player configuration between main app and embed
+window.PLAYER_CONFIG = {
+  plyr: {
+    controls: ['play-large', 'play', 'skip-back', 'progress', 'current-time', 'duration', 'mute', 'skip-forward', 'captions', 'settings', 'pip', 'airplay', 'fullscreen'],
+    settings: ['quality', 'speed', 'audio'],
+    autoplay: true,
+    seekTime: 10,
+  },
+  hls: {
+    maxBufferLength: 300,
+    maxMaxBufferLength: 600,
+    backBufferLength: 120,
+    maxBufferSize: 500 * 1000 * 1000,
+    startLevel: -1,
+    abrEwmaDefaultEstimate: 5e6,
+    enableWorker: true,
+    lowLatencyMode: false,
+    startFragPrefetch: true,
+    prefetchInitSegment: true,
+    highBufferWatchdogPeriod: 2,
+    maxFragLookUpTolerance: 0.25,
+    manifestLoadingMaxRetry: 10,
+    levelLoadingMaxRetry: 10,
+    fragLoadingMaxRetry: 10,
+    manifestLoadingRetryDelay: 200,
+    levelLoadingRetryDelay: 200,
+    fragLoadingRetryDelay: 200,
+  },
+  theme: {
+    accent: '#ff5a1f',
+    bg: '#0b0a08',
+    text: '#f5efe4',
+    text2: '#9ca3af',
+    overlayBg: 'rgba(11, 10, 8, 0.8)',
+  },
+};
